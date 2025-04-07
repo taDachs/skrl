@@ -225,6 +225,82 @@ def _generate_modules(layers: Sequence[str], activations: Union[Sequence[str], s
                         cls = "nn.Conv2d"
                 else:
                     raise ValueError(f"Invalid or unsupported 'conv2d' layer definition: {kwargs}")
+            # hyper embedder
+            elif layer_type == "hyper_embedder":
+                cls = "simba.HyperEmbedder"
+                kwargs = layer[layer_type]
+                if type(kwargs) is dict:
+                    mapping = {
+                        "hidden_dim": "hidden_dim",
+                        "scaler_init": "scaler_init",
+                        "scaler_scale": "scaler_scale",
+                        "c_shift": "c_shift",
+                    }
+                    kwargs = {mapping.get(k, k): v for k, v in kwargs.items()}
+                    kwargs["hidden_dim"] = get_num_units(kwargs["hidden_dim"])
+                else:
+                    raise ValueError(f"Invalid or unsupported 'hyper_embedder' layer definition: {kwargs}")
+            # hyper lerp block
+            elif layer_type == "hyper_lerp":
+                cls = "simba.HyperLERPBlock"
+                kwargs = layer[layer_type]
+                if type(kwargs) is dict:
+                    mapping = {
+                        "hidden_dim": "hidden_dim",
+                        "scaler_init": "scaler_init",
+                        "scaler_scale": "scaler_scale",
+                        "alpha_init": "alpha_init",
+                        "alpha_scale": "alpha_scale",
+                        "expansion": "expansion",
+                    }
+                    kwargs = {mapping.get(k, k): v for k, v in kwargs.items()}
+                    kwargs["hidden_dim"] = get_num_units(kwargs["hidden_dim"])
+                else:
+                    raise ValueError(f"Invalid or unsupported 'hyper_lerp' layer definition: {kwargs}")
+            # hyper linear
+            elif layer_type == "hyper_linear":
+                cls = "simba.HyperLinear"
+                kwargs = layer[layer_type]
+                if type(kwargs) is dict:
+                    mapping = {
+                        "hidden_dim": "hidden_dim",
+                        "out_dim": "out_dim",
+                        "scaler_init": "scaler_init",
+                        "scaler_scale": "scaler_scale",
+                    }
+                    kwargs = {mapping.get(k, k): v for k, v in kwargs.items()}
+                    kwargs["hidden_dim"] = get_num_units(kwargs["hidden_dim"])
+                    kwargs["out_dim"] = get_num_units(kwargs["out_dim"])
+                else:
+                    raise ValueError(f"Invalid or unsupported 'hyper_linear' layer definition: {kwargs}")
+            # hyper normal
+            elif layer_type == "hyper_normal":
+                cls = "simba.HyperNormal"
+                kwargs = layer[layer_type]
+                if type(kwargs) is dict:
+                    mapping = {
+                        "hidden_dim": "hidden_dim",
+                        "out_dim": "out_dim",
+                        "scaler_init": "scaler_init",
+                        "scaler_scale": "scaler_scale",
+                    }
+                    kwargs = {mapping.get(k, k): v for k, v in kwargs.items()}
+                    kwargs["hidden_dim"] = get_num_units(kwargs["hidden_dim"])
+                    kwargs["out_dim"] = get_num_units(kwargs["out_dim"])
+                else:
+                    raise ValueError(f"Invalid or unsupported 'hyper_normal' layer definition: {kwargs}")
+            # tanh normal squasher
+            elif layer_type == "tanh_normal_squasher":
+                cls = "simba.TanhNormalSquasher"
+                kwargs = layer[layer_type]
+                if type(kwargs) is dict:
+                    mapping = {
+                        "min_log_std": "min_log_std",
+                        "max_log_std": "max_log_std",
+                    }
+                    kwargs = {mapping.get(k, k): v for k, v in kwargs.items()}
+                else:
+                    raise ValueError(f"Invalid or unsupported 'tanh_normal_squasher' layer definition: {kwargs}")
             # flatten
             elif layer_type == "flatten":
                 cls = "nn.Flatten"

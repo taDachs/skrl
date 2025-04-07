@@ -64,6 +64,7 @@ class Agent:
                 model.to(model.device)
 
         self.tracking_data = collections.defaultdict(list)
+        self.tracking_histogram_data = collections.defaultdict(list)
         self.write_interval = self.cfg.get("experiment", {}).get("write_interval", "auto")
 
         self._track_rewards = collections.deque(maxlen=100)
@@ -189,6 +190,18 @@ class Agent:
         """
         self.tracking_data[tag].append(value)
 
+    def track_histogram_data(self, tag: str, value: list) -> None:
+        """Track data to TensorBoard
+
+        Currently only scalar data are supported
+
+        :param tag: Data identifier (e.g. 'Loss / policy loss')
+        :type tag: str
+        :param value: Value to track
+        :type value: float
+        """
+        self.tracking_histogram_data[tag].append(value)
+
     def write_tracking_data(self, timestep: int, timesteps: int) -> None:
         """Write tracking data to TensorBoard
 
@@ -208,6 +221,11 @@ class Agent:
         self._track_rewards.clear()
         self._track_timesteps.clear()
         self.tracking_data.clear()
+
+        for k, v in self.tracking_histogram_data.items():
+            self.writer.add_histogram(k, torch.cat(v), timestep)
+
+        self.tracking_histogram_data.clear()
 
     def write_checkpoint(self, timestep: int, timesteps: int) -> None:
         """Write checkpoint (modules) to disk

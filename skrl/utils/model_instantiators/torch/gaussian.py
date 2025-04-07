@@ -5,6 +5,7 @@ import gymnasium
 
 import torch
 import torch.nn as nn  # noqa
+import skrl.agents.torch.simba_v2 as simba
 
 from skrl.models.torch import GaussianMixin  # noqa
 from skrl.models.torch import Model
@@ -24,6 +25,7 @@ def gaussian_model(
     reduction: str = "sum",
     initial_log_std: float = 0,
     fixed_log_std: bool = False,
+    network_log_prob: bool = False,
     network: Sequence[Mapping[str, Any]] = [],
     output: Union[str, Sequence[str]] = "",
     return_source: bool = False,
@@ -58,6 +60,8 @@ def gaussian_model(
     :param fixed_log_std: Whether the log standard deviation parameter should be fixed (default: False).
                           Fixed parameters have the gradient computation deactivated
     :type fixed_log_std: bool, optional
+    :param network_log_prob: Use log_prob returned by network
+    :type network_log_prob: bool, optional
     :param network: Network definition (default: [])
     :type network: list of dict, optional
     :param output: Output expression (default: "")
@@ -102,13 +106,18 @@ def gaussian_model(
         GaussianMixin.__init__(self, clip_actions, clip_log_std, min_log_std, max_log_std, reduction)
 
         {networks}
-        self.log_std_parameter = nn.Parameter(torch.full(size=({output["size"]},), fill_value={float(initial_log_std)}), requires_grad={not fixed_log_std})
+        {f"self.log_std_parameter = nn.Parameter(torch.full(size=({output["size"]},), fill_value={float(initial_log_std)}), requires_grad={not fixed_log_std})"
+         if not network_log_prob
+         else ""}
 
     def compute(self, inputs, role=""):
         states = unflatten_tensorized_space(self.observation_space, inputs.get("states"))
         taken_actions = unflatten_tensorized_space(self.action_space, inputs.get("taken_actions"))
         {forward}
-        return output, self.log_std_parameter, {{}}
+        {"return *output, {}"
+         if network_log_prob
+         else "return output, self.log_std_parameter, {}"}
+
     """
     # return source
     if return_source:

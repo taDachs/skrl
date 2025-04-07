@@ -452,7 +452,7 @@ class PPO(Agent):
 
                     sampled_states = self._state_preprocessor(sampled_states, train=not epoch)
 
-                    _, next_log_prob, _ = self.policy.act(
+                    actions, next_log_prob, _ = self.policy.act(
                         {"states": sampled_states, "taken_actions": sampled_actions}, role="policy"
                     )
 
@@ -516,6 +516,9 @@ class PPO(Agent):
                 cumulative_value_loss += value_loss.item()
                 if self._entropy_loss_scale:
                     cumulative_entropy_loss += entropy_loss.item()
+
+                for i in range(self.action_space.shape[0]):
+                    self.track_histogram_data(f"Policy / Action Distribution {i}", actions[:, i])
 
             # update learning rate
             if self._learning_rate_scheduler:

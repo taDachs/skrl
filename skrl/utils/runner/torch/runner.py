@@ -2,6 +2,9 @@ from typing import Any, Mapping, Type, Union
 
 import copy
 
+from jax._src.ad_util import instantiate
+from numpy import isin
+
 from skrl import logger
 from skrl.agents.torch import Agent
 from skrl.envs.wrappers.torch import MultiAgentEnvWrapper, Wrapper
@@ -11,6 +14,8 @@ from skrl.resources.preprocessors.torch import RunningStandardScaler  # noqa
 from skrl.resources.schedulers.torch import KLAdaptiveLR  # noqa
 from skrl.trainers.torch import Trainer
 from skrl.utils import set_seed
+
+import skrl.agents.torch.simba_v2 as simba
 
 
 class Runner:
@@ -125,6 +130,10 @@ class Runner:
             from skrl.agents.torch.sac import SAC, SAC_DEFAULT_CONFIG
 
             component = SAC_DEFAULT_CONFIG if "default_config" in name else SAC
+        elif name in ["simba_v2", "simba_v2_default_config"]:
+            from skrl.agents.torch.simba_v2 import SIMBAV2, SIMBAV2_DEFAULT_CONFIG
+
+            component = SIMBAV2_DEFAULT_CONFIG if "default_config" in name else SIMBAV2
         elif name in ["td3", "td3_default_config"]:
             from skrl.agents.torch.td3 import TD3, TD3_DEFAULT_CONFIG
 
@@ -208,6 +217,8 @@ class Runner:
 
         agent_class = cfg.get("agent", {}).get("class", "").lower()
 
+        model_classes = {}
+
         # instantiate models
         models = {}
         for agent_id in possible_agents:
@@ -226,11 +237,18 @@ class Runner:
             # non-shared models
             if separate:
                 for role in models_cfg:
-                    # get instantiator function and remove 'class' key
-                    model_class = models_cfg[role].get("class")
-                    if not model_class:
-                        raise ValueError(f"No 'class' field defined in 'models:{role}' cfg")
-                    del models_cfg[role]["class"]
+                    if isinstance(models_cfg[role], str):
+                        model_class = model_classes[models_cfg[role]]
+                        instance_cfg = models_cfg[models_cfg[role]]
+                    else:
+                        # get instantiator function and remove 'class' key
+                        model_class = models_cfg[role].get("class")
+                        if not model_class:
+                            raise ValueError(f"No 'class' field defined in 'models:{role}' cfg")
+                        del models_cfg[role]["class"]
+                        model_classes[role] = model_class
+                        instance_cfg = models_cfg[role]
+
                     model_class = self._component(model_class)
                     # get specific spaces according to agent/model cfg
                     observation_space = observation_spaces[agent_id]
@@ -248,7 +266,7 @@ class Runner:
                         observation_space=observation_space,
                         action_space=action_spaces[agent_id],
                         device=device,
-                        **self._process_cfg(models_cfg[role]),
+                        **self._process_cfg(instance_cfg),
                         return_source=True,
                     )
                     print("==================================================")
@@ -261,7 +279,7 @@ class Runner:
                         observation_space=observation_space,
                         action_space=action_spaces[agent_id],
                         device=device,
-                        **self._process_cfg(models_cfg[role]),
+                        **self._process_cfg(instance_cfg),
                     )
             # shared models
             else:
@@ -407,7 +425,7 @@ class Runner:
                 "reply_buffer": reply_buffer,
                 "collect_reference_motions": lambda num_samples: env.collect_reference_motions(num_samples),
             }
-        elif agent_class in ["a2c", "cem", "ddpg", "ddqn", "dqn", "ppo", "rpo", "sac", "td3", "trpo"]:
+        elif agent_class in ["a2c", "cem", "ddpg", "ddqn", "dqn", "ppo", "rpo", "sac", "td3", "trpo", "simba_v2"]:
             agent_id = possible_agents[0]
             agent_cfg = self._component(f"{agent_class}_DEFAULT_CONFIG").copy()
             agent_cfg.update(self._process_cfg(cfg["agent"]))
