@@ -106,7 +106,7 @@ def gaussian_model(
         GaussianMixin.__init__(self, clip_actions, clip_log_std, min_log_std, max_log_std, reduction)
 
         {networks}
-        {f"self.log_std_parameter = nn.Parameter(torch.full(size=({output["size"]},), fill_value={float(initial_log_std)}), requires_grad={not fixed_log_std})"
+        {f"self.log_std_parameter = nn.Parameter(torch.full(size=({output['size']},), fill_value={float(initial_log_std)}), requires_grad={not fixed_log_std})"
          if not network_log_prob
          else ""}
 
