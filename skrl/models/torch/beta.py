@@ -26,6 +26,7 @@ class BetaMixin:
             self._b_clip_actions_min = torch.tensor(self.action_space.low, device=self.device, dtype=torch.float32)
             self._b_clip_actions_max = torch.tensor(self.action_space.high, device=self.device, dtype=torch.float32)
 
+        self._b_scaler = torch.tensor(scaler, device=self.device, dtype=torch.float32)
         self._b_alpha = None
         self._b_beta = None
         self._b_num_samples = None
@@ -94,7 +95,7 @@ class BetaMixin:
         outputs["alpha"] = alpha
         outputs["beta"] = beta
 
-        scaled_actions = 2.0 * actions - 1.0
+        scaled_actions = (2.0 * actions - 1.0) * self._b_scaler
         return scaled_actions, log_prob, outputs
 
     def get_entropy(self, role: str = "") -> torch.Tensor:
