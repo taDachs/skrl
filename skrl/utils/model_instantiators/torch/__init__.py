@@ -6,6 +6,7 @@ from skrl.utils.model_instantiators.torch.gaussian import gaussian_model
 from skrl.utils.model_instantiators.torch.multicategorical import multicategorical_model
 from skrl.utils.model_instantiators.torch.multivariate_gaussian import multivariate_gaussian_model
 from skrl.utils.model_instantiators.torch.shared import shared_model
+from skrl.utils.model_instantiators.torch.beta import beta_model
 
 
 # keep for compatibility with versions prior to 1.3.0
