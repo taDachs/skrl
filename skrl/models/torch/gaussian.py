@@ -6,7 +6,7 @@ import torch
 from torch.distributions import Normal, TanhTransform, AffineTransform, TransformedDistribution
 import torch.nn.functional as F
 
-import numpy as np
+EPS = 1e-6
 
 # speed up distribution construction by disabling checking
 Normal.set_default_validate_args(False)
@@ -144,7 +144,7 @@ class GaussianMixin:
         if self._g_squash:
             self._g_distribution = TransformedDistribution(
                 Normal(mean_actions, log_std.exp()),
-                [TanhTransform(cache_size=1), AffineTransform(0, self._g_action_scaler)],
+                [TanhTransform(), AffineTransform(0, self._g_action_scaler)],
             )
         else:
             self._g_distribution = TransformedDistribution(
@@ -156,6 +156,10 @@ class GaussianMixin:
         # clip actions
         if self._g_clip_actions:
             actions = torch.clamp(actions, min=self._g_clip_actions_min, max=self._g_clip_actions_max)
+
+        if self._g_squash:
+            bound = self._g_action_scaler - EPS
+            actions = torch.clamp(actions, min=-bound, max=bound)  # avoid using -1, 1 as input for log prob
 
         # log of the probability density function
         log_prob = self._g_distribution.log_prob(inputs.get("taken_actions", actions))
