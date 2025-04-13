@@ -3,12 +3,13 @@ from typing import Any, Mapping, Tuple, Union
 import gymnasium
 
 import torch
-from torch.distributions import Normal
+from torch.distributions import Normal, TanhTransform, AffineTransform, TransformedDistribution
+import torch.nn.functional as F
 
+import numpy as np
 
 # speed up distribution construction by disabling checking
 Normal.set_default_validate_args(False)
-
 
 class GaussianMixin:
     def __init__(
@@ -17,6 +18,8 @@ class GaussianMixin:
         clip_log_std: bool = True,
         min_log_std: float = -20,
         max_log_std: float = 2,
+        squash: bool = False,
+        action_scaler: float = 1.0,
         reduction: str = "sum",
         role: str = "",
     ) -> None:
@@ -86,6 +89,8 @@ class GaussianMixin:
         self._g_clip_log_std = clip_log_std
         self._g_log_std_min = min_log_std
         self._g_log_std_max = max_log_std
+        self._g_squash = squash
+        self._g_action_scaler = action_scaler
 
         self._g_log_std = None
         self._g_num_samples = None
@@ -136,8 +141,15 @@ class GaussianMixin:
         self._g_num_samples = mean_actions.shape[0]
 
         # distribution
-        self._g_distribution = Normal(mean_actions, log_std.exp())
-
+        if self._g_squash:
+            self._g_distribution = TransformedDistribution(
+                Normal(mean_actions, log_std.exp()),
+                [TanhTransform(cache_size=1), AffineTransform(0, self._g_action_scaler)],
+            )
+        else:
+            self._g_distribution = TransformedDistribution(
+                Normal(mean_actions, log_std.exp()), [AffineTransform(0, self._g_action_scaler)]
+            )
         # sample using the reparameterization trick
         actions = self._g_distribution.rsample()
 

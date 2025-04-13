@@ -22,6 +22,8 @@ def gaussian_model(
     clip_log_std: bool = True,
     min_log_std: float = -20,
     max_log_std: float = 2,
+    squash: bool = False,
+    action_scaler: float = 1.0,
     reduction: str = "sum",
     initial_log_std: float = 0,
     fixed_log_std: bool = False,
@@ -101,9 +103,9 @@ def gaussian_model(
 
     template = f"""class GaussianModel(GaussianMixin, Model):
     def __init__(self, observation_space, action_space, device, clip_actions,
-                    clip_log_std, min_log_std, max_log_std, reduction="sum"):
+                    clip_log_std, min_log_std, max_log_std, squash, action_scaler, reduction="sum"):
         Model.__init__(self, observation_space, action_space, device)
-        GaussianMixin.__init__(self, clip_actions, clip_log_std, min_log_std, max_log_std, reduction)
+        GaussianMixin.__init__(self, clip_actions, clip_log_std, min_log_std, max_log_std, squash, action_scaler, reduction)
 
         {networks}
         {f"self.log_std_parameter = nn.Parameter(torch.full(size=({output['size']},), fill_value={float(initial_log_std)}), requires_grad={not fixed_log_std})"
@@ -134,5 +136,7 @@ def gaussian_model(
         clip_log_std=clip_log_std,
         min_log_std=min_log_std,
         max_log_std=max_log_std,
+        squash=squash,
+        action_scaler=action_scaler,
         reduction=reduction,
     )
