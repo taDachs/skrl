@@ -146,8 +146,6 @@ class GaussianMixin:
         self._g_distribution = Normal(mean_actions, log_std.exp())
 
         # sample using the reparameterization trick
-        pre_actions = self._g_distribution.rsample()
-
         if self._g_squash:
             pre_actions = self._g_distribution.rsample()
             actions = torch.tanh(pre_actions) * self._g_action_scaler
@@ -169,7 +167,7 @@ class GaussianMixin:
                 - log_std
                 - 0.5 * np.log(2.0 * torch.pi)
             )
-            log_prob -= torch.log(1 - actions.pow(2) + 1e-6)
+            log_prob -= torch.log(1 - (actions / self._g_action_scaler).pow(2) + 1e-6)
         else:
             log_prob = self._g_distribution.log_prob(inputs.get("taken_actions", actions))
 
