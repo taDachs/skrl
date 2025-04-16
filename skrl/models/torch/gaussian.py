@@ -6,6 +6,8 @@ import torch
 from torch.distributions import Normal, TanhTransform, AffineTransform, TransformedDistribution
 import torch.nn.functional as F
 
+import numpy as np
+
 EPS = 1e-6
 
 # speed up distribution construction by disabling checking
@@ -141,15 +143,16 @@ class GaussianMixin:
         self._g_num_samples = mean_actions.shape[0]
 
         # distribution
-        if self._g_squash:
-            self._g_distribution = TransformedDistribution(
-                Normal(mean_actions, log_std.exp()),
-                [TanhTransform(), AffineTransform(0, self._g_action_scaler)],
-            )
-        else:
-            self._g_distribution = Normal(mean_actions, log_std.exp())
+        self._g_distribution = Normal(mean_actions, log_std.exp())
+
         # sample using the reparameterization trick
-        actions = self._g_distribution.rsample()
+        pre_actions = self._g_distribution.rsample()
+
+        if self._g_squash:
+            pre_actions = self._g_distribution.rsample()
+            actions = torch.tanh(pre_actions) * self._g_action_scaler
+        else:
+            actions = self._g_distribution.rsample()
 
         # clip actions
         if self._g_clip_actions:
@@ -160,7 +163,16 @@ class GaussianMixin:
             actions = torch.clamp(actions, min=-bound, max=bound)  # avoid using -1, 1 as input for log prob
 
         # log of the probability density function
-        log_prob = self._g_distribution.log_prob(inputs.get("taken_actions", actions))
+        if self._g_squash:
+            log_prob = (
+                -0.5 * ((pre_actions - mean_actions) / log_std.exp()).pow(2)
+                - log_std
+                - 0.5 * np.log(2.0 * torch.pi)
+            )
+            log_prob -= torch.log(1 - actions.pow(2) + 1e-6)
+        else:
+            log_prob = self._g_distribution.log_prob(inputs.get("taken_actions", actions))
+
         if self._g_reduction is not None:
             log_prob = self._g_reduction(log_prob, dim=-1)
         if log_prob.dim() != actions.dim():

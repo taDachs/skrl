@@ -80,7 +80,7 @@ def gaussian_model(
         network, output = convert_deprecated_parameters(kwargs)
 
     # parse model definition
-    containers, output = generate_containers(network, output, embed_output=True, indent=1)
+    containers, output = generate_containers(network, output, embed_output=not network_log_prob, indent=1)
 
     # network definitions
     networks = []
@@ -90,8 +90,13 @@ def gaussian_model(
         forward.append(f'{container["name"]} = self.{container["name"]}_container({container["input"]})')
     # process output
     if output["modules"]:
-        networks.append(f'self.output_layer = {output["modules"][0]}')
-        forward.append(f'output = self.output_layer({container["name"]})')
+        if network_log_prob:
+            networks.append(f'self.mean = {output["modules"][0]}')
+            networks.append(f'self.std = {output["modules"][0]}')
+            forward.append(f'output = self.mean({container["name"]}), self.std({container["name"]})')
+        else:
+            networks.append(f'self.output_layer = {output["modules"][0]}')
+            forward.append(f'output = self.output_layer({container["name"]})')
     if output["output"]:
         forward.append(f'output = {output["output"]}')
     else:
@@ -100,6 +105,18 @@ def gaussian_model(
     # build substitutions and indent content
     networks = textwrap.indent("\n".join(networks), prefix=" " * 8)[8:]
     forward = textwrap.indent("\n".join(forward), prefix=" " * 8)[8:]
+
+    if network_log_prob:
+        return_stm = f"""
+        if len(output) == 2:
+            mean, log_std = output
+        else:
+            mean, log_std = output[..., :self.num_actions], output[..., self.num_actions:]
+        """
+    else:
+        return_stm = f"""
+        mean, log_std = output, self.log_std_parameter
+        """
 
     template = f"""class GaussianModel(GaussianMixin, Model):
     def __init__(self, observation_space, action_space, device, clip_actions,
@@ -116,10 +133,8 @@ def gaussian_model(
         states = unflatten_tensorized_space(self.observation_space, inputs.get("states"))
         taken_actions = unflatten_tensorized_space(self.action_space, inputs.get("taken_actions"))
         {forward}
-        {"return *output, {}"
-         if network_log_prob
-         else "return output, self.log_std_parameter, {}"}
-
+        {return_stm}
+        return mean, log_std, {{}}
     """
     # return source
     if return_source:

@@ -508,3 +508,6 @@ class SAC(Agent):
                 if self._learning_rate_scheduler:
                     self.track_data("Learning / Policy learning rate", self.policy_scheduler.get_last_lr()[0])
                     self.track_data("Learning / Critic learning rate", self.critic_scheduler.get_last_lr()[0])
+
+                for i in range(self.action_space.shape[0]):
+                    self.track_histogram_data(f"Policy / Action Distribution {i}", next_actions[:, i])
