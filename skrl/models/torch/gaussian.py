@@ -147,9 +147,7 @@ class GaussianMixin:
                 [TanhTransform(), AffineTransform(0, self._g_action_scaler)],
             )
         else:
-            self._g_distribution = TransformedDistribution(
-                Normal(mean_actions, log_std.exp()), [AffineTransform(0, self._g_action_scaler)]
-            )
+            self._g_distribution = Normal(mean_actions, log_std.exp())
         # sample using the reparameterization trick
         actions = self._g_distribution.rsample()
 
