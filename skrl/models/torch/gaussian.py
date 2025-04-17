@@ -162,12 +162,8 @@ class GaussianMixin:
 
         # log of the probability density function
         if self._g_squash:
-            log_prob = (
-                -0.5 * ((pre_actions - mean_actions) / log_std.exp()).pow(2)
-                - log_std
-                - 0.5 * np.log(2.0 * torch.pi)
-            )
-            log_prob -= torch.log(1 - (actions / self._g_action_scaler).pow(2) + 1e-6)
+            log_prob = self._g_distribution.log_prob(inputs.get("taken_actions", pre_actions))
+            log_prob -= torch.log(self._g_action_scaler * (1 - actions.pow(2) + EPS))
         else:
             log_prob = self._g_distribution.log_prob(inputs.get("taken_actions", actions))
 
