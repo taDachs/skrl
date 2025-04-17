@@ -442,7 +442,7 @@ class SIMBAV2(Agent):
 
                 if self._use_categorical_critic:
                     with torch.no_grad():
-                        next_actions, next_log_prob, _ = self.policy.act(
+                        next_actions, next_log_prob, policy_outputs = self.policy.act(
                             {"states": sampled_next_states}, role="policy"
                         )
 
@@ -510,7 +510,7 @@ class SIMBAV2(Agent):
                 else:
                     # compute target values
                     with torch.no_grad():
-                        next_actions, next_log_prob, _ = self.policy.act(
+                        next_actions, next_log_prob, policy_outputs = self.policy.act(
                             {"states": sampled_next_states}, role="policy"
                         )
 
@@ -571,7 +571,7 @@ class SIMBAV2(Agent):
 
             with torch.autocast(device_type=self._device_type, enabled=self._mixed_precision):
                 # compute policy (actor) loss
-                actions, log_prob, _ = self.policy.act({"states": sampled_states}, role="policy")
+                actions, log_prob, policy_outputs = self.policy.act({"states": sampled_states}, role="policy")
                 critic_1_values, _, _ = self.critic_1.act(
                     {"states": sampled_states, "taken_actions": actions}, role="critic_1"
                 )
@@ -662,6 +662,14 @@ class SIMBAV2(Agent):
                 self.track_data(
                     "Policy / Entropy Scaled (mean)", torch.mean(policy_entropy_scaled).item()
                 )
+
+                self.track_data("Policy / mean (max)", torch.max(policy_outputs["mean_actions"]).item())
+                self.track_data("Policy / mean (mean)", torch.mean(policy_outputs["mean_actions"]).item())
+                self.track_data("Policy / mean (min)", torch.min(policy_outputs["mean_actions"]).item())
+
+                self.track_data("Policy / Log std (max)", torch.max(self.policy.get_log_std()).item())
+                self.track_data("Policy / Log std (mean)", torch.mean(self.policy.get_log_std()).item())
+                self.track_data("Policy / Log std (min)", torch.min(self.policy.get_log_std()).item())
 
                 if self._learn_entropy:
                     self.track_data("Loss / Entropy loss", entropy_loss.item())

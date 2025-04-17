@@ -173,6 +173,9 @@ class GaussianMixin:
         if log_prob.dim() != actions.dim():
             log_prob = log_prob.unsqueeze(-1)
 
+        if self._g_squash:
+            mean_actions = torch.tanh(mean_actions) * self._g_action_scaler
+
         outputs["mean_actions"] = mean_actions
         return actions, log_prob, outputs
 
