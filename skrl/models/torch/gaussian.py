@@ -148,7 +148,8 @@ class GaussianMixin:
         # sample using the reparameterization trick
         if self._g_squash:
             pre_actions = self._g_distribution.rsample()
-            actions = torch.tanh(pre_actions) * self._g_action_scaler
+            actions_squashed = torch.tanh(pre_actions)
+            actions = actions_squashed * self._g_action_scaler
         else:
             actions = self._g_distribution.rsample()
 
@@ -163,7 +164,7 @@ class GaussianMixin:
         # log of the probability density function
         if self._g_squash:
             log_prob = self._g_distribution.log_prob(inputs.get("taken_actions", pre_actions))
-            log_prob -= torch.log(self._g_action_scaler * (1 - actions.pow(2) + EPS))
+            log_prob -= torch.log(self._g_action_scaler * (1 - actions_squashed.pow(2)) + EPS)
         else:
             log_prob = self._g_distribution.log_prob(inputs.get("taken_actions", actions))
 
