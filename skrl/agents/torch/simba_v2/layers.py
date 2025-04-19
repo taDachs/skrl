@@ -79,7 +79,7 @@ class HyperEmbedder(nn.Module):
         return x
 
 
-class HyperLERPBlock(nn.Module):
+class HyperLERPLayer(nn.Module):
     def __init__(
         self,
         hidden_dim: int,
@@ -95,7 +95,7 @@ class HyperLERPBlock(nn.Module):
         if not scaler_scale:
             scaler_scale = math.sqrt(2 / hidden_dim)
         if not alpha_init:
-            alpha_init = 1 / (hidden_dim + 1)
+            alpha_init = 1 / 2
         if not alpha_scale:
             alpha_scale = 1 / math.sqrt(hidden_dim)
 
@@ -115,6 +115,38 @@ class HyperLERPBlock(nn.Module):
         x = F.normalize(x, p=2, dim=-1)
 
         return x
+
+
+class HyperLERPBlock(nn.Module):
+    def __init__(
+        self,
+        hidden_dim: int,
+        num_blocks: int = 1,
+        scaler_init: float = None,
+        scaler_scale: float = None,
+        alpha_init: float = None,
+        alpha_scale: float = None,
+        expansion: int = 4,
+    ):
+        super().__init__()
+        if not scaler_init:
+            scaler_init = math.sqrt(2 / hidden_dim)
+        if not scaler_scale:
+            scaler_scale = math.sqrt(2 / hidden_dim)
+        if not alpha_init:
+            alpha_init = 1 / (num_blocks + 1)
+        if not alpha_scale:
+            alpha_scale = 1 / math.sqrt(hidden_dim)
+
+        blocks = []
+        for i in range(num_blocks):
+            blocks.append(HyperLERPLayer(hidden_dim, scaler_init, scaler_scale, alpha_init, alpha_scale, expansion))
+
+        self.net = nn.Sequential(*blocks)
+
+    def forward(self, x):
+        return self.net(x)
+
 
 class HyperNormal(nn.Module):
     def __init__(

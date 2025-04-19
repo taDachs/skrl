@@ -247,6 +247,7 @@ def _generate_modules(layers: Sequence[str], activations: Union[Sequence[str], s
                 if type(kwargs) is dict:
                     mapping = {
                         "hidden_dim": "hidden_dim",
+                        "num_blocks": "num_blocks",
                         "scaler_init": "scaler_init",
                         "scaler_scale": "scaler_scale",
                         "alpha_init": "alpha_init",
