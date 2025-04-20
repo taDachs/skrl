@@ -3,7 +3,7 @@ from typing import Any, Mapping, Tuple, Union
 import gymnasium
 
 import torch
-from torch.distributions import Normal, TanhTransform, AffineTransform, TransformedDistribution
+from torch.distributions import Normal
 import torch.nn.functional as F
 
 import numpy as np
@@ -137,7 +137,12 @@ class GaussianMixin:
 
         # clamp log standard deviations
         if self._g_clip_log_std:
-            log_std = torch.clamp(log_std, self._g_log_std_min, self._g_log_std_max)
+            if self._g_squash:
+                log_std = self._g_log_std_min + (
+                    self._g_log_std_max - self._g_log_std_min
+                ) * 0.5 * (1 + torch.tanh(log_std))
+            else:
+                log_std = torch.clamp(log_std, self._g_log_std_min, self._g_log_std_max)
 
         self._g_log_std = log_std
         self._g_num_samples = mean_actions.shape[0]
