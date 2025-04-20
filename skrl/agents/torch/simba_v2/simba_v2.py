@@ -17,7 +17,7 @@ from skrl.models.torch import Model
 from skrl.models.torch.deterministic import DeterministicMixin
 from skrl.models.torch.gaussian import GaussianMixin
 
-from .normalization import l2normalize_model
+from .normalization import l2normalize_model, TorchRewardNormalizer
 
 
 # fmt: off
@@ -52,6 +52,8 @@ SIMBAV2_DEFAULT_CONFIG = {
     "max_v": 10.0,  # max critic value
     "num_bins": 101,  # num of bins for critic
     "use_categorical_critic": True,
+    "use_reward_normalizer": False,  # use reward normalizer
+    "reward_normalizer_kwargs": {},  # reward normalizer kwargs (e.g. {"size": env.reward_space})
 
     "rewards_shaper": None,         # rewards shaping function: Callable(reward, timestep, timesteps) -> reward
 
@@ -262,6 +264,12 @@ class SIMBAV2(Agent):
         else:
             self._state_preprocessor = self._empty_preprocessor
 
+        if self.cfg["use_reward_normalizer"]:
+            self._rewards_normalizer = TorchRewardNormalizer(
+                self._discount_factor, **self.cfg["reward_normalizer_kwargs"]
+            )
+
+
     def init(self, trainer_cfg: Optional[Mapping[str, Any]] = None) -> None:
         """Initialize the agent"""
         super().init(trainer_cfg=trainer_cfg)
@@ -358,6 +366,9 @@ class SIMBAV2(Agent):
             # reward shaping
             if self._rewards_shaper is not None:
                 rewards = self._rewards_shaper(rewards, timestep, timesteps)
+
+            if self._rewards_normalizer is not None:
+                rewards = self._rewards_normalizer(rewards, terminated, truncated)
 
             # storage transition in memory
             self.memory.add_samples(

@@ -179,6 +179,41 @@ class TorchRunningMeanStd(nn.Module):
             return self._compute(x, train=train, inverse=inverse)
 
 
+class TorchRewardNormalizer(nn.Module):
+    def __init__(
+        self,
+        gamma: float = 0.99,
+        g_max: float = 10.0,
+        epsilon: float = 1e-8,
+    ):
+        super().__init__()
+        self.return_rms = TorchRunningMeanStd(size=1)
+        self.reward: torch.Tensor = None
+        self.gamma = gamma
+        self.epsilon = epsilon
+        self.g_max = g_max
+        self._update_running_mean = True
+        self.max_return = torch.tensor(0.0, dtype=torch.float32)
+
+    def forward(
+            self, rewards: torch.Tensor, terminated: torch.Tensor, truncated: torch.Tensor
+    ) -> torch.Tensor:
+        if self.reward is None:
+            self.reward = torch.zeros_like(rewards)
+
+        self.reward = self.reward * self.gamma + rewards
+        self.return_rms.forward(self.reward, train=True)
+        self.max_return = torch.max(self.max_return, self.reward.abs().max())
+
+        var_denominator = torch.sqrt(self.return_rms.running_variance + self.epsilon)
+        min_required_denominator = self.max_return / self.g_max
+        denominator = torch.max(var_denominator, min_required_denominator)
+        normalized_reward = rewards / denominator
+        self.reward *= (terminated | truncated).logical_not().double()
+
+        return normalized_reward
+
+
 class NormalizeReward(gym.Wrapper, gym.utils.RecordConstructorArgs):
     def __init__(
         self,
