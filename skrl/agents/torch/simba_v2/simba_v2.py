@@ -268,7 +268,8 @@ class SIMBAV2(Agent):
             self._rewards_normalizer = TorchRewardNormalizer(
                 self._discount_factor, **self.cfg["reward_normalizer_kwargs"]
             )
-
+        else:
+            self._rewards_normalizer = None
 
     def init(self, trainer_cfg: Optional[Mapping[str, Any]] = None) -> None:
         """Initialize the agent"""
