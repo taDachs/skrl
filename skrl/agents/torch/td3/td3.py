@@ -14,6 +14,8 @@ from skrl.agents.torch import Agent
 from skrl.memories.torch import Memory
 from skrl.models.torch import Model
 
+from skrl.utils import categorical_td_loss, l2normalize_model
+
 
 # fmt: off
 # [start-config-dict-torch]
@@ -36,6 +38,14 @@ TD3_DEFAULT_CONFIG = {
     "learning_starts": 0,           # learning starts after this many steps
 
     "grad_norm_clip": 0,            # clipping coefficient for the norm of the gradients
+
+    "normalize_weights": False,
+    "min_v": -10.0,  # min critic value
+    "max_v": 10.0,  # max critic value
+    "num_bins": 101,  # num of bins for critic
+    "use_categorical_critic": True,
+    "use_reward_normalizer": False,  # use reward normalizer
+    "reward_normalizer_kwargs": {},  # reward normalizer kwargs (e.g. {"size": env.reward_space})
 
     "exploration": {
         "noise": None,              # exploration noise
@@ -183,6 +193,16 @@ class TD3(Agent):
 
         self._mixed_precision = self.cfg["mixed_precision"]
 
+        self._normalize_weights = self.cfg["normalize_weights"]
+        self._min_v = self.cfg["min_v"]
+        self._max_v = self.cfg["max_v"]
+        self._num_bins = self.cfg["num_bins"]
+        self._use_categorical_critic = self.cfg["use_categorical_critic"]
+
+        self.bin_values = torch.linspace(
+            self._min_v, self._max_v, self._num_bins, device=self.device
+        ).reshape(1, -1)
+
         # set up automatic mixed precision
         self._device_type = torch.device(device).type
         if version.parse(torch.__version__) >= version.parse("2.4"):
@@ -213,6 +233,13 @@ class TD3(Agent):
             self.checkpoint_modules["state_preprocessor"] = self._state_preprocessor
         else:
             self._state_preprocessor = self._empty_preprocessor
+
+        if self.cfg["use_reward_normalizer"]:
+            self._rewards_normalizer = TorchRewardNormalizer(
+                self._discount_factor, **self.cfg["reward_normalizer_kwargs"]
+            )
+        else:
+            self._rewards_normalizer = None
 
     def init(self, trainer_cfg: Optional[Mapping[str, Any]] = None) -> None:
         """Initialize the agent"""
@@ -377,6 +404,17 @@ class TD3(Agent):
         # write tracking data and checkpoints
         super().post_interaction(timestep, timesteps)
 
+    def _process_categorical_critic_outputs(
+        self,
+        outputs: torch.Tensor,
+    ) -> torch.Tensor:
+        log_prob = F.log_softmax(outputs, dim=1)
+
+        value = torch.sum(torch.exp(log_prob) * self.bin_values, dim=1)
+
+        return value, log_prob
+
+
     def _update(self, timestep: int, timesteps: int) -> None:
         """Algorithm's main update step
 
@@ -404,42 +442,118 @@ class TD3(Agent):
                 sampled_states = self._state_preprocessor(sampled_states, train=True)
                 sampled_next_states = self._state_preprocessor(sampled_next_states, train=True)
 
-                with torch.no_grad():
-                    # target policy smoothing
-                    next_actions, _, _ = self.target_policy.act({"states": sampled_next_states}, role="target_policy")
-                    if self._smooth_regularization_noise is not None:
-                        noises = torch.clamp(
-                            self._smooth_regularization_noise.sample(next_actions.shape),
-                            min=-self._smooth_regularization_clip,
-                            max=self._smooth_regularization_clip,
+                if self._use_categorical_critic:
+                    with torch.no_grad():
+                        next_actions, _, _ = self.target_policy.act({"states": sampled_next_states}, role="target_policy")
+                        if self._smooth_regularization_noise is not None:
+                            noises = torch.clamp(
+                                self._smooth_regularization_noise.sample(next_actions.shape),
+                                min=-self._smooth_regularization_clip,
+                                max=self._smooth_regularization_clip,
+                            )
+                            next_actions.add_(noises)
+                            next_actions.clamp_(min=self.clip_actions_min, max=self.clip_actions_max)
+
+                        target_critic_1_out, _, _ = self.target_critic_1.act(
+                            {"states": sampled_next_states, "taken_actions": next_actions},
+                            role="target_critic_1",
                         )
-                        next_actions.add_(noises)
-                        next_actions.clamp_(min=self.clip_actions_min, max=self.clip_actions_max)
+                        target_q1, target_log_prob_q1 = self._process_categorical_critic_outputs(
+                            target_critic_1_out
+                        )
+                        target_critic_2_out, _, _ = self.target_critic_2.act(
+                            {"states": sampled_next_states, "taken_actions": next_actions},
+                            role="target_critic_2",
+                        )
+                        target_q2, target_log_prob_q2 = self._process_categorical_critic_outputs(
+                            target_critic_2_out
+                        )
 
-                    # compute target values
-                    target_q1_values, _, _ = self.target_critic_1.act(
-                        {"states": sampled_next_states, "taken_actions": next_actions}, role="target_critic_1"
+                        target_log_prob = torch.where(
+                            (target_q1 < target_q2).unsqueeze(-1),
+                            target_log_prob_q1,
+                            target_log_prob_q2,
+                        )
+                    critic_1_out, _, _ = self.critic_1.act(
+                        {"states": sampled_states, "taken_actions": sampled_actions},
+                        role="critic_1",
                     )
-                    target_q2_values, _, _ = self.target_critic_2.act(
-                        {"states": sampled_next_states, "taken_actions": next_actions}, role="target_critic_2"
+                    critic_1_values, log_prob_q1 = self._process_categorical_critic_outputs(critic_1_out)
+                    critic_2_out, _, _ = self.critic_2.act(
+                        {"states": sampled_states, "taken_actions": sampled_actions},
+                        role="critic_2",
                     )
-                    target_q_values = torch.min(target_q1_values, target_q2_values)
-                    target_values = (
-                        sampled_rewards
-                        + self._discount_factor
-                        * (sampled_terminated | sampled_truncated).logical_not()
-                        * target_q_values
+                    critic_2_values, log_prob_q2 = self._process_categorical_critic_outputs(critic_2_out)
+                    loss_1, info_1 = categorical_td_loss(
+                        log_prob_q1,
+                        target_log_prob,
+                        sampled_rewards,
+                        (sampled_terminated | sampled_truncated).double(),
+                        0.0,
+                        0.0,
+                        self._discount_factor,
+                        self._num_bins,
+                        self._min_v,
+                        self._max_v,
+                        self.device,
+                    )
+                    loss_2, info_2 = categorical_td_loss(
+                        log_prob_q2,
+                        target_log_prob,
+                        sampled_rewards,
+                        (sampled_terminated | sampled_truncated).double(),
+                        0.0,
+                        0.0,
+                        self._discount_factor,
+                        self._num_bins,
+                        self._min_v,
+                        self._max_v,
+                        self.device,
                     )
 
-                # compute critic loss
-                critic_1_values, _, _ = self.critic_1.act(
-                    {"states": sampled_states, "taken_actions": sampled_actions}, role="critic_1"
-                )
-                critic_2_values, _, _ = self.critic_2.act(
-                    {"states": sampled_states, "taken_actions": sampled_actions}, role="critic_2"
-                )
+                    target_values = torch.sum(info_1["target_probs"] * self.bin_values, dim=1)
 
-                critic_loss = F.mse_loss(critic_1_values, target_values) + F.mse_loss(critic_2_values, target_values)
+                    critic_loss = torch.mean(loss_1 + loss_2)
+                else:
+                    with torch.no_grad():
+                        # target policy smoothing
+                        next_actions, _, _ = self.target_policy.act({"states": sampled_next_states}, role="target_policy")
+                        if self._smooth_regularization_noise is not None:
+                            noises = torch.clamp(
+                                self._smooth_regularization_noise.sample(next_actions.shape),
+                                min=-self._smooth_regularization_clip,
+                                max=self._smooth_regularization_clip,
+                            )
+                            next_actions.add_(noises)
+                            next_actions.clamp_(min=self.clip_actions_min, max=self.clip_actions_max)
+
+                        # compute target values
+                        target_q1_values, _, _ = self.target_critic_1.act(
+                            {"states": sampled_next_states, "taken_actions": next_actions}, role="target_critic_1"
+                        )
+                        target_q2_values, _, _ = self.target_critic_2.act(
+                            {"states": sampled_next_states, "taken_actions": next_actions}, role="target_critic_2"
+                        )
+                        if self._use_categorical_critic:
+                            target_q1_values, _ = self._process_categorical_critic_outputs(target_q1_values)
+                            target_q2_values, _ = self._process_categorical_critic_outputs(target_q2_values)
+                        target_q_values = torch.min(target_q1_values, target_q2_values)
+                        target_values = (
+                            sampled_rewards
+                            + self._discount_factor
+                            * (sampled_terminated | sampled_truncated).logical_not()
+                            * target_q_values
+                        )
+
+                    # compute critic loss
+                    critic_1_values, _, _ = self.critic_1.act(
+                        {"states": sampled_states, "taken_actions": sampled_actions}, role="critic_1"
+                    )
+                    critic_2_values, _, _ = self.critic_2.act(
+                        {"states": sampled_states, "taken_actions": sampled_actions}, role="critic_3"
+                    )
+
+                    critic_loss = F.mse_loss(critic_1_values, target_values) + F.mse_loss(critic_2_values, target_values)
 
             # optimization step (critic)
             self.critic_optimizer.zero_grad()
@@ -456,6 +570,10 @@ class TD3(Agent):
                 )
 
             self.scaler.step(self.critic_optimizer)
+            if self._normalize_weights:
+                l2normalize_model(self.critic_1)
+                l2normalize_model(self.critic_2)
+
 
             # delayed update
             self._critic_update_counter += 1
@@ -482,7 +600,8 @@ class TD3(Agent):
                     nn.utils.clip_grad_norm_(self.policy.parameters(), self._grad_norm_clip)
 
                 self.scaler.step(self.policy_optimizer)
-
+                if self._normalize_weights:
+                    l2normalize_model(self.policy)
                 # update target networks
                 self.target_critic_1.update_parameters(self.critic_1, polyak=self._polyak)
                 self.target_critic_2.update_parameters(self.critic_2, polyak=self._polyak)
@@ -515,3 +634,6 @@ class TD3(Agent):
             if self._learning_rate_scheduler:
                 self.track_data("Learning / Policy learning rate", self.policy_scheduler.get_last_lr()[0])
                 self.track_data("Learning / Critic learning rate", self.critic_scheduler.get_last_lr()[0])
+
+            for i in range(self.action_space.shape[0]):
+                self.track_histogram_data(f"Policy / Action Distribution {i}", next_actions[:, i])

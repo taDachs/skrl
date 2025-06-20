@@ -17,7 +17,9 @@ from skrl.models.torch import Model
 from skrl.models.torch.deterministic import DeterministicMixin
 from skrl.models.torch.gaussian import GaussianMixin
 
-from .normalization import l2normalize_model, TorchRewardNormalizer
+from .normalization import TorchRewardNormalizer
+
+from skrl.utils import categorical_td_loss, l2normalize_model
 
 
 # fmt: off
@@ -73,47 +75,6 @@ SIMBAV2_DEFAULT_CONFIG = {
 }
 # [end-config-dict-torch]
 # fmt: on
-
-
-def categorical_td_loss(
-    pred_log_probs: torch.Tensor,  # (n, num_bins)
-    target_log_probs: torch.Tensor,  # (n, num_bins)
-    reward: torch.Tensor,  # (n, 1)
-    done: torch.Tensor,  # (n,)
-    actor_log_probs: torch.Tensor,  # (n,)
-    entropy_coefficient: torch.Tensor,  # (1,)
-    gamma: float,
-    num_bins: int,
-    min_v: float,
-    max_v: float,
-    device: torch.device,
-) -> torch.Tensor:
-    with torch.no_grad():
-        actor_entropy = actor_log_probs * entropy_coefficient
-
-        bin_values = torch.linspace(min_v, max_v, num_bins, device=device).reshape(1, -1)
-        target_bin_values = reward + gamma * (bin_values - actor_entropy) * (1.0 - done)
-        target_bin_values = torch.clamp(target_bin_values, min_v, max_v)
-
-        b = (target_bin_values - min_v) / (max_v - min_v) * (num_bins - 1)
-        l = torch.floor(b)
-        u = torch.ceil(b)
-
-        l_mask = F.one_hot(l.reshape(-1).long(), num_classes=num_bins).reshape(
-            -1, num_bins, num_bins
-        )
-        u_mask = F.one_hot(u.reshape(-1).long(), num_classes=num_bins).reshape(
-            -1, num_bins, num_bins
-        )
-
-        target_probs = torch.exp(target_log_probs)
-        m_l = (target_probs * (u + (l == u).double() - b)).reshape(-1, num_bins, 1)
-        m_u = (target_probs * (b - l)).reshape(-1, num_bins, 1)
-        target_probs = torch.sum(m_l * l_mask + m_u * u_mask, axis=1)
-
-    loss = -torch.mean(torch.sum(target_probs * pred_log_probs, axis=1))
-
-    return loss, {"target_probs": target_probs}
 
 
 class SIMBAV2(Agent):

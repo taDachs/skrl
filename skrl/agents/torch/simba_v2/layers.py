@@ -45,7 +45,7 @@ class HyperMLP(nn.Module):
         x = self.scaler(x)
         x = F.relu(x) + self.eps
         x = self.w2(x)
-        x = F.normalize(x, p=2, dim=-1)
+        x = F.normalize(x, p=2.0, dim=-1)
         return x
 
 
@@ -71,10 +71,10 @@ class HyperEmbedder(nn.Module):
         new_axis = torch.ones(x.shape[:-1] + (1,), device=x.device) * self.c_shift
 
         x = torch.cat([x, new_axis], dim=-1)
-        x = F.normalize(x, p=2, dim=-1)
+        x = F.normalize(x, p=2.0, dim=-1)
         x = self.w(x)
         x = self.scaler(x)
-        x = F.normalize(x, p=2, dim=-1)
+        x = F.normalize(x, p=2.0, dim=-1)
 
         return x
 
@@ -112,7 +112,7 @@ class HyperLERPLayer(nn.Module):
         residual = x
         x = self.mlp(x)
         x = residual + self.alpha_scaler(x - residual)
-        x = F.normalize(x, p=2, dim=-1)
+        x = F.normalize(x, p=2.0, dim=-1)
 
         return x
 

@@ -1,4 +1,5 @@
-from typing import Any, Mapping, Optional, Sequence, Tuple, Union
+from typing import Any, Optional, Sequence, Tuple, Union
+from collections.abc import Mapping
 
 import collections
 import gymnasium

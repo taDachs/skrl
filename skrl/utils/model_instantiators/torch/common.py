@@ -58,6 +58,7 @@ def _get_activation_function(activation: Union[str, None], as_module: bool = Tru
         "softplus": "nn.Softplus()" if as_module else "functional.softplus",
         "softsign": "nn.Softsign()" if as_module else "functional.softsign",
         "tanh": "nn.Tanh()" if as_module else "functional.tanh",
+        "identity": "nn.Identity()" if as_module else "functional.identity",
     }
     return activations.get(activation.lower() if type(activation) is str else activation, None)
 

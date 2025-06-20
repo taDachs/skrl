@@ -9,18 +9,6 @@ from skrl import config
 from skrl.utils.spaces.torch import compute_space_size
 
 
-def l2normalize_model(model: nn.Module):
-    # Iterate over all modules in the model
-    for name, module in model.named_modules():
-        # Check if the module is a linear layer
-        if "hyper_w" in name:
-            # Normalize the weights using L2 norm
-            with torch.no_grad():
-                weight = module.weight
-                normalized_weight = F.normalize(weight, p=2, dim=1)
-                module.weight.copy_(normalized_weight)
-
-
 class NumpyRunningMeanStd:
     """Tracks the mean, variance and count of values."""
 

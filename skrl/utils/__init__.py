@@ -1,4 +1,7 @@
-from typing import Optional
+from typing import Optional, Any
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
 
 import os
 import random
@@ -110,3 +113,57 @@ def set_seed(seed: Optional[int] = None, deterministic: bool = False) -> int:
     config.jax.key = seed
 
     return seed
+
+def categorical_td_loss(
+    pred_log_probs: torch.Tensor,  # (n, num_bins)
+    target_log_probs: torch.Tensor,  # (n, num_bins)
+    reward: torch.Tensor,  # (n, 1)
+    done: torch.Tensor,  # (n,)
+    actor_log_probs: torch.Tensor,  # (n,)
+    entropy_coefficient: torch.Tensor,  # (1,)
+    gamma: float,
+    num_bins: int,
+    min_v: float,
+    max_v: float,
+    device: torch.device,
+) -> tuple[torch.Tensor, Any]:
+    with torch.no_grad():
+        actor_entropy = actor_log_probs * entropy_coefficient
+
+        bin_values = torch.linspace(min_v, max_v, num_bins, device=device).reshape(1, -1)
+        target_bin_values = reward + gamma * (bin_values - actor_entropy) * (1.0 - done)
+        target_bin_values = torch.clamp(target_bin_values, min_v, max_v)
+
+        b = (target_bin_values - min_v) / (max_v - min_v) * (num_bins - 1)
+        l = torch.floor(b)
+        u = torch.ceil(b)
+
+        l_mask = F.one_hot(l.reshape(-1).long(), num_classes=num_bins).reshape(
+            -1, num_bins, num_bins
+        )
+        u_mask = F.one_hot(u.reshape(-1).long(), num_classes=num_bins).reshape(
+            -1, num_bins, num_bins
+        )
+
+        target_probs = torch.exp(target_log_probs)
+        m_l = (target_probs * (u + (l == u).double() - b)).reshape(-1, num_bins, 1)
+        m_u = (target_probs * (b - l)).reshape(-1, num_bins, 1)
+        target_probs = torch.sum(m_l * l_mask + m_u * u_mask, axis=1)
+
+    loss = -torch.mean(torch.sum(target_probs * pred_log_probs, axis=1))
+
+    return loss, {"target_probs": target_probs}
+
+
+def l2normalize_model(model: nn.Module):
+    # Iterate over all modules in the model
+    for name, module in model.named_modules():
+        # Check if the module is a linear layer
+        if "hyper_w" in name:
+            # Normalize the weights using L2 norm
+            with torch.no_grad():
+                weight = module.weight
+                normalized_weight = F.normalize(weight, p=2, dim=1)
+                module.weight.copy_(normalized_weight)
+
+
