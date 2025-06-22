@@ -21,6 +21,7 @@ class Agent:
         self,
         models: Mapping[str, Model],
         memory: Optional[Union[Memory, Tuple[Memory]]] = None,
+        state_space: Optional[Union[int, Tuple[int], gymnasium.Space]] = None,
         observation_space: Optional[Union[int, Tuple[int], gymnasium.Space]] = None,
         action_space: Optional[Union[int, Tuple[int], gymnasium.Space]] = None,
         device: Optional[Union[str, torch.device]] = None,
@@ -45,6 +46,7 @@ class Agent:
         :type cfg: dict
         """
         self.models = models
+        self.state_space = state_space
         self.observation_space = observation_space
         self.action_space = action_space
         self.cfg = cfg if cfg is not None else {}
@@ -223,7 +225,7 @@ class Agent:
         self.tracking_data.clear()
 
         for k, v in self.tracking_histogram_data.items():
-            self.writer.add_histogram(k, torch.cat(v), timestep)
+            self.writer.add_histogram(k, torch.cat(v), timestep, bins=100)
 
         self.tracking_histogram_data.clear()
 

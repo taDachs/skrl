@@ -171,6 +171,7 @@ class Runner:
             "learning_rate_scheduler",
             "shared_state_preprocessor",
             "state_preprocessor",
+            "observation_preprocessor",
             "value_preprocessor",
             "amp_state_preprocessor",
             "noise",
@@ -253,6 +254,7 @@ class Runner:
                     model_class = self._component(model_class)
                     # get specific spaces according to agent/model cfg
                     observation_space = observation_spaces[agent_id]
+                    state_space = state_spaces[agent_id]
                     if agent_class == "mappo" and role == "value":
                         observation_space = state_spaces[agent_id]
                     if agent_class == "amp" and role == "discriminator":
@@ -264,6 +266,7 @@ class Runner:
                             )
                     # print model source
                     source = model_class(
+                        state_space=state_space,
                         observation_space=observation_space,
                         action_space=action_spaces[agent_id],
                         device=device,
@@ -277,6 +280,7 @@ class Runner:
                     print("--------------------------------------------------")
                     # instantiate model
                     models[agent_id][role] = model_class(
+                        state_space=state_space,
                         observation_space=observation_space,
                         action_space=action_spaces[agent_id],
                         device=device,
@@ -304,6 +308,7 @@ class Runner:
                 model_class = self._component("Shared")
                 # print model source
                 source = model_class(
+                    state_space=state_spaces[agent_id],
                     observation_space=observation_spaces[agent_id],
                     action_space=action_spaces[agent_id],
                     device=device,
@@ -319,6 +324,7 @@ class Runner:
                 print("--------------------------------------------------")
                 # instantiate model
                 models[agent_id][roles[0]] = model_class(
+                    state_space=state_spaces[agent_id],
                     observation_space=observation_spaces[agent_id],
                     action_space=action_spaces[agent_id],
                     device=device,
@@ -393,7 +399,8 @@ class Runner:
                 amp_observation_space = observation_spaces[agent_id]
             agent_cfg = self._component(f"{agent_class}_DEFAULT_CONFIG").copy()
             agent_cfg.update(self._process_cfg(cfg["agent"]))
-            agent_cfg["state_preprocessor_kwargs"].update({"size": observation_spaces[agent_id], "device": device})
+            agent_cfg["state_preprocessor_kwargs"].update({"size": state_spaces[agent_id], "device": device})
+            agent_cfg["observation_preprocessor_kwargs"].update({"size": observation_spaces[agent_id], "device": device})
             agent_cfg["value_preprocessor_kwargs"].update({"size": 1, "device": device})
             agent_cfg["amp_state_preprocessor_kwargs"].update({"size": amp_observation_space, "device": device})
 
@@ -419,6 +426,7 @@ class Runner:
             agent_kwargs = {
                 "models": models[agent_id],
                 "memory": memories[agent_id],
+                "state_space": state_spaces[agent_id],
                 "observation_space": observation_spaces[agent_id],
                 "action_space": action_spaces[agent_id],
                 "amp_observation_space": amp_observation_space,
@@ -431,6 +439,9 @@ class Runner:
             agent_cfg = self._component(f"{agent_class}_DEFAULT_CONFIG").copy()
             agent_cfg.update(self._process_cfg(cfg["agent"]))
             agent_cfg.get("state_preprocessor_kwargs", {}).update(
+                {"size": state_spaces[agent_id], "device": device}
+            )
+            agent_cfg["observation_preprocessor_kwargs"].update(
                 {"size": observation_spaces[agent_id], "device": device}
             )
             agent_cfg.get("value_preprocessor_kwargs", {}).update({"size": 1, "device": device})
@@ -447,6 +458,7 @@ class Runner:
             agent_kwargs = {
                 "models": models[agent_id],
                 "memory": memories[agent_id],
+                "state_space": state_spaces[agent_id],
                 "observation_space": observation_spaces[agent_id],
                 "action_space": action_spaces[agent_id],
             }
@@ -455,6 +467,9 @@ class Runner:
             agent_cfg = self._component(f"{agent_class}_DEFAULT_CONFIG").copy()
             agent_cfg.update(self._process_cfg(cfg["agent"]))
             agent_cfg["state_preprocessor_kwargs"].update(
+                {agent_id: {"size": state_spaces[agent_id], "device": device} for agent_id in possible_agents}
+            )
+            agent_cfg["observation_preprocessor_kwargs"].update(
                 {agent_id: {"size": observation_spaces[agent_id], "device": device} for agent_id in possible_agents}
             )
             agent_cfg["value_preprocessor_kwargs"].update({"size": 1, "device": device})
@@ -469,6 +484,9 @@ class Runner:
             agent_cfg = self._component(f"{agent_class}_DEFAULT_CONFIG").copy()
             agent_cfg.update(self._process_cfg(cfg["agent"]))
             agent_cfg["state_preprocessor_kwargs"].update(
+                {agent_id: {"size": state_spaces[agent_id], "device": device} for agent_id in possible_agents}
+            )
+            agent_cfg["observation_preprocessor_kwargs"].update(
                 {agent_id: {"size": observation_spaces[agent_id], "device": device} for agent_id in possible_agents}
             )
             agent_cfg["shared_state_preprocessor_kwargs"].update(

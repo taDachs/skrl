@@ -18,14 +18,17 @@ class IsaacLabWrapper(Wrapper):
         super().__init__(env)
 
         self._reset_once = True
-        self._observations = None
+        self._observations: Dict[str, torch.Tensor] = {}
         self._info = {}
 
     @property
     def state_space(self) -> Union[gymnasium.Space, None]:
         """State space"""
         try:
-            return self._unwrapped.single_observation_space["critic"]
+            try:
+                return self._unwrapped.single_observation_space["critic"]
+            except KeyError:
+                return self._unwrapped.single_observation_space["policy"]
         except KeyError:
             pass
         try:
@@ -49,7 +52,11 @@ class IsaacLabWrapper(Wrapper):
         except:
             return self._unwrapped.action_space
 
-    def step(self, actions: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, Any]:
+    def step(
+        self, actions: torch.Tensor
+    ) -> tuple[
+        torch.Tensor | dict[str, torch.Tensor], torch.Tensor, torch.Tensor, torch.Tensor, Any
+    ]:
         """Perform a step in the environment
 
         :param actions: The actions to perform
@@ -60,10 +67,11 @@ class IsaacLabWrapper(Wrapper):
         """
         actions = unflatten_tensorized_space(self.action_space, actions)
         observations, reward, terminated, truncated, self._info = self._env.step(actions)
-        self._observations = flatten_tensorized_space(tensorize_space(self.observation_space, observations["policy"]))
+        self._observations["policy"] = flatten_tensorized_space(tensorize_space(self.observation_space, observations["policy"]))
+        self._observations["critic"] = flatten_tensorized_space(tensorize_space(self.state_space, observations.get("critic", observations["policy"])))
         return self._observations, reward.view(-1, 1), terminated.view(-1, 1), truncated.view(-1, 1), self._info
 
-    def reset(self) -> Tuple[torch.Tensor, Any]:
+    def reset(self) -> tuple[Mapping[str, torch.Tensor], Any]:
         """Reset the environment
 
         :return: Observation, info
@@ -71,8 +79,11 @@ class IsaacLabWrapper(Wrapper):
         """
         if self._reset_once:
             observations, self._info = self._env.reset()
-            self._observations = flatten_tensorized_space(
+            self._observations["policy"] = flatten_tensorized_space(
                 tensorize_space(self.observation_space, observations["policy"])
+            )
+            self._observations["critic"] = flatten_tensorized_space(
+                tensorize_space(self.state_space, observations.get("critic", observations["policy"]))
             )
             self._reset_once = False
         return self._observations, self._info

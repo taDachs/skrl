@@ -39,6 +39,9 @@ SIMBAV2_DEFAULT_CONFIG = {
     "state_preprocessor": None,             # state preprocessor class (see skrl.resources.preprocessors)
     "state_preprocessor_kwargs": {},        # state preprocessor's kwargs (e.g. {"size": env.observation_space})
 
+    "observation_preprocessor": None,             # observation preprocessor class (see skrl.resources.preprocessors)
+    "observation_preprocessor_kwargs": {},        # observation preprocessor's kwargs (e.g. {"size": env.observation_space})
+
     "random_timesteps": 0,          # random exploration steps
     "learning_starts": 0,           # learning starts after this many steps
 
@@ -60,6 +63,7 @@ SIMBAV2_DEFAULT_CONFIG = {
     "rewards_shaper": None,         # rewards shaping function: Callable(reward, timestep, timesteps) -> reward
 
     "mixed_precision": False,       # enable automatic mixed precision for higher performance
+    "compile": False,
 
     "experiment": {
         "directory": "",            # experiment's parent directory
@@ -82,6 +86,7 @@ class SIMBAV2(Agent):
         self,
         models: Mapping[str, Model],
         memory: Optional[Union[Memory, Tuple[Memory]]] = None,
+        state_space: Optional[Union[int, Tuple[int], gymnasium.Space]] = None,
         observation_space: Optional[Union[int, Tuple[int], gymnasium.Space]] = None,
         action_space: Optional[Union[int, Tuple[int], gymnasium.Space]] = None,
         device: Optional[Union[str, torch.device]] = None,
@@ -92,6 +97,7 @@ class SIMBAV2(Agent):
         super().__init__(
             models=models,
             memory=memory,
+            state_space=state_space,
             observation_space=observation_space,
             action_space=action_space,
             device=device,
@@ -143,6 +149,7 @@ class SIMBAV2(Agent):
         self._learning_rate_scheduler = self.cfg["learning_rate_scheduler"]
 
         self._state_preprocessor = self.cfg["state_preprocessor"]
+        self._observation_preprocessor = self.cfg["observation_preprocessor"]
 
         self._random_timesteps = self.cfg["random_timesteps"]
         self._learning_starts = self.cfg["learning_starts"]
@@ -225,12 +232,24 @@ class SIMBAV2(Agent):
         else:
             self._state_preprocessor = self._empty_preprocessor
 
+        # set up preprocessors
+        if self._observation_preprocessor:
+            self._observation_preprocessor = self._observation_preprocessor(
+                **self.cfg["observation_preprocessor_kwargs"]
+            )
+            self.checkpoint_modules["observation_preprocessor"] = self._observation_preprocessor
+        else:
+            self._observation_preprocessor = self._empty_preprocessor
+
         if self.cfg["use_reward_normalizer"]:
             self._rewards_normalizer = TorchRewardNormalizer(
                 self._discount_factor, **self.cfg["reward_normalizer_kwargs"]
             )
         else:
             self._rewards_normalizer = None
+
+        self._compile = self.cfg["compile"]
+
 
     def init(self, trainer_cfg: Optional[Mapping[str, Any]] = None) -> None:
         """Initialize the agent"""
@@ -240,10 +259,16 @@ class SIMBAV2(Agent):
         # create tensors in memory
         if self.memory is not None:
             self.memory.create_tensor(
-                name="states", size=self.observation_space, dtype=torch.float32
+                name="states", size=self.state_space, dtype=torch.float32
             )
             self.memory.create_tensor(
-                name="next_states", size=self.observation_space, dtype=torch.float32
+                name="next_states", size=self.state_space, dtype=torch.float32
+            )
+            self.memory.create_tensor(
+                name="observations", size=self.observation_space, dtype=torch.float32
+            )
+            self.memory.create_tensor(
+                name="next_observations", size=self.observation_space, dtype=torch.float32
             )
             self.memory.create_tensor(name="actions", size=self.action_space, dtype=torch.float32)
             self.memory.create_tensor(name="rewards", size=1, dtype=torch.float32)
@@ -252,14 +277,30 @@ class SIMBAV2(Agent):
 
             self._tensors_names = [
                 "states",
+                "observations",
                 "actions",
                 "rewards",
                 "next_states",
+                "next_observations",
                 "terminated",
                 "truncated",
             ]
 
-    def act(self, states: torch.Tensor, timestep: int, timesteps: int) -> torch.Tensor:
+        if self._compile:
+            self.policy = torch.compile(self.policy)
+            self.critic_1 = torch.compile(self.critic_1)
+            self.critic_2 = torch.compile(self.critic_2)
+            self.target_critic_1 = torch.compile(self.target_critic_1)
+            self.target_critic_2 = torch.compile(self.target_critic_2)
+
+            self._state_preprocessor = torch.compile(self._state_preprocessor)
+            self._observation_preprocessor = torch.compile(self._observation_preprocessor)
+            self.update_categorical_critic = torch.compile(self.update_categorical_critic)
+            self.update_value_critic = torch.compile(self.update_value_critic)
+            self.update_policy = torch.compile(self.update_policy)
+
+
+    def act(self, states: Mapping[str, torch.Tensor], timestep: int, timesteps: int) -> torch.Tensor:
         """Process the environment's states to make a decision (actions) using the main policy
 
         :param states: Environment's states
@@ -274,22 +315,23 @@ class SIMBAV2(Agent):
         """
         # sample random actions
         # TODO, check for stochasticity
+        obs = states["policy"]
         if timestep < self._random_timesteps:
             return self.policy.random_act(
-                {"states": self._state_preprocessor(states)}, role="policy"
+                {"states": self._observation_preprocessor(obs)}, role="policy"
             )
 
         # sample stochastic actions
         with torch.autocast(device_type=self._device_type, enabled=self._mixed_precision):
             actions, log_probs, outputs = self.policy.act(
-                {"states": self._state_preprocessor(states)}, role="policy"
+                {"states": self._observation_preprocessor(obs)}, role="policy"
             )
 
         return actions, log_probs, outputs
 
     def record_transition(
         self,
-        states: torch.Tensor,
+        states: Mapping[str, torch.Tensor],
         actions: torch.Tensor,
         rewards: torch.Tensor,
         next_states: torch.Tensor,
@@ -332,21 +374,30 @@ class SIMBAV2(Agent):
             if self._rewards_normalizer is not None:
                 rewards = self._rewards_normalizer(rewards, terminated, truncated)
 
+            obs = states["policy"]
+            next_obs = next_states["policy"]
+            states = states["critic"]
+            next_states = next_states["critic"]
+
             # storage transition in memory
             self.memory.add_samples(
                 states=states,
+                observations=obs,
                 actions=actions,
                 rewards=rewards,
                 next_states=next_states,
+                next_observations=next_obs,
                 terminated=terminated,
                 truncated=truncated,
             )
             for memory in self.secondary_memories:
                 memory.add_samples(
                     states=states,
+                    observations=obs,
                     actions=actions,
                     rewards=rewards,
                     next_states=next_states,
+                    next_observations=next_obs,
                     terminated=terminated,
                     truncated=truncated,
                 )
@@ -387,6 +438,228 @@ class SIMBAV2(Agent):
 
         return value, log_prob
 
+    def update_categorical_critic(
+        self,
+        sampled_states: torch.Tensor,
+        sampled_obs: torch.Tensor,
+        sampled_actions: torch.Tensor,
+        sampled_rewards: torch.Tensor,
+        sampled_next_states: torch.Tensor,
+        sampled_next_obs: torch.Tensor,
+        sampled_terminated: torch.Tensor,
+        sampled_truncated: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        with torch.autocast(device_type=self._device_type, enabled=self._mixed_precision):
+            with torch.no_grad():
+                next_actions, next_log_prob, policy_outputs = self.policy.act(
+                    {"states": sampled_next_obs}, role="policy"
+                )
+
+                target_critic_1_out, _, _ = self.target_critic_1.act(
+                    {"states": sampled_next_states, "taken_actions": next_actions},
+                    role="target_critic_1",
+                )
+                target_q1, target_log_prob_q1 = self._process_categorical_critic_outputs(
+                    target_critic_1_out
+                )
+                target_critic_2_out, _, _ = self.target_critic_2.act(
+                    {"states": sampled_next_states, "taken_actions": next_actions},
+                    role="target_critic_2",
+                )
+                target_q2, target_log_prob_q2 = self._process_categorical_critic_outputs(
+                    target_critic_2_out
+                )
+
+                target_log_prob = torch.where(
+                    (target_q1 < target_q2).unsqueeze(-1),
+                    target_log_prob_q1,
+                    target_log_prob_q2,
+                )
+
+            critic_1_out, _, _ = self.critic_1.act(
+                {"states": sampled_states, "taken_actions": sampled_actions},
+                role="critic_1",
+            )
+            critic_1_values, log_prob_q1 = self._process_categorical_critic_outputs(critic_1_out)
+            critic_2_out, _, _ = self.critic_2.act(
+                {"states": sampled_states, "taken_actions": sampled_actions},
+                role="critic_2",
+            )
+            critic_2_values, log_prob_q2 = self._process_categorical_critic_outputs(critic_2_out)
+            loss_1, info_1 = categorical_td_loss(
+                log_prob_q1,
+                target_log_prob,
+                sampled_rewards,
+                (sampled_terminated | sampled_truncated).double(),
+                next_log_prob,
+                self._entropy_coefficient,
+                self._discount_factor,
+                self._num_bins,
+                self._min_v,
+                self._max_v,
+                self.device,
+            )
+            loss_2, info_2 = categorical_td_loss(
+                log_prob_q2,
+                target_log_prob,
+                sampled_rewards,
+                (sampled_terminated | sampled_truncated).double(),
+                next_log_prob,
+                self._entropy_coefficient,
+                self._discount_factor,
+                self._num_bins,
+                self._min_v,
+                self._max_v,
+                self.device,
+            )
+
+            target_values = torch.sum(info_1["target_probs"] * self.bin_values, dim=1)
+
+            critic_loss = torch.mean(loss_1 + loss_2)
+
+        # optimization step (critic)
+        self.critic_optimizer.zero_grad()
+        self.scaler.scale(critic_loss).backward()
+
+        if config.torch.is_distributed:
+            self.critic_1.reduce_parameters()
+            self.critic_2.reduce_parameters()
+
+        if self._grad_norm_clip > 0:
+            self.scaler.unscale_(self.critic_optimizer)
+            nn.utils.clip_grad_norm_(
+                itertools.chain(self.critic_1.parameters(), self.critic_2.parameters()),
+                self._grad_norm_clip,
+            )
+
+        self.scaler.step(self.critic_optimizer)
+        if self._normalize_weights:
+            l2normalize_model(self.critic_1)
+            l2normalize_model(self.critic_2)
+
+        return critic_loss, target_values, critic_1_values, critic_2_values
+
+    def update_value_critic(
+        self,
+        sampled_states: torch.Tensor,
+        sampled_obs: torch.Tensor,
+        sampled_actions: torch.Tensor,
+        sampled_rewards: torch.Tensor,
+        sampled_next_states: torch.Tensor,
+        sampled_next_obs: torch.Tensor,
+        sampled_terminated: torch.Tensor,
+        sampled_truncated: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        with torch.autocast(device_type=self._device_type, enabled=self._mixed_precision):
+            # compute target values
+            with torch.no_grad():
+                next_actions, next_log_prob, policy_outputs = self.policy.act(
+                    {"states": sampled_next_obs}, role="policy"
+                )
+
+                target_q1_values, _, _ = self.target_critic_1.act(
+                    {"states": sampled_next_states, "taken_actions": next_actions},
+                    role="target_critic_1",
+                )
+                target_q2_values, _, _ = self.target_critic_2.act(
+                    {"states": sampled_next_states, "taken_actions": next_actions},
+                    role="target_critic_2",
+                )
+
+                target_q_values = (
+                    torch.min(target_q1_values, target_q2_values)
+                    - self._entropy_coefficient * next_log_prob
+                )
+                target_values = (
+                    sampled_rewards
+                    + self._discount_factor
+                    * (sampled_terminated | sampled_truncated).logical_not()
+                    * target_q_values
+                )
+
+            # compute critic loss
+            critic_1_values, _, _ = self.critic_1.act(
+                {"states": sampled_states, "taken_actions": sampled_actions},
+                role="critic_1",
+            )
+            critic_2_values, _, _ = self.critic_2.act(
+                {"states": sampled_states, "taken_actions": sampled_actions},
+                role="critic_2",
+            )
+
+            critic_loss = (
+                F.mse_loss(critic_1_values, target_values)
+                + F.mse_loss(critic_2_values, target_values)
+            ) / 2
+
+        # optimization step (critic)
+        self.critic_optimizer.zero_grad()
+        self.scaler.scale(critic_loss).backward()
+
+        if config.torch.is_distributed:
+            self.critic_1.reduce_parameters()
+            self.critic_2.reduce_parameters()
+
+        if self._grad_norm_clip > 0:
+            self.scaler.unscale_(self.critic_optimizer)
+            nn.utils.clip_grad_norm_(
+                itertools.chain(self.critic_1.parameters(), self.critic_2.parameters()),
+                self._grad_norm_clip,
+            )
+
+        self.scaler.step(self.critic_optimizer)
+        if self._normalize_weights:
+            l2normalize_model(self.critic_1)
+            l2normalize_model(self.critic_2)
+
+        return critic_loss, target_values, critic_1_values, critic_2_values
+
+    def update_policy(
+        self,
+        sampled_states: torch.Tensor,
+        sampled_obs: torch.Tensor,
+        sampled_actions: torch.Tensor,
+        sampled_rewards: torch.Tensor,
+        sampled_next_states: torch.Tensor,
+        sampled_next_obs: torch.Tensor,
+        sampled_terminated: torch.Tensor,
+        sampled_truncated: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        with torch.autocast(device_type=self._device_type, enabled=self._mixed_precision):
+            # compute policy (actor) loss
+            actions, log_prob, policy_outputs = self.policy.act({"states": sampled_obs}, role="policy")
+            critic_1_values, _, _ = self.critic_1.act(
+                {"states": sampled_states, "taken_actions": actions}, role="critic_1"
+            )
+            critic_2_values, _, _ = self.critic_2.act(
+                {"states": sampled_states, "taken_actions": actions}, role="critic_2"
+            )
+            if self._use_categorical_critic:
+                critic_1_values, _ = self._process_categorical_critic_outputs(critic_1_values)
+                critic_2_values, _ = self._process_categorical_critic_outputs(critic_2_values)
+
+            policy_loss = (
+                self._entropy_coefficient * log_prob
+                - torch.min(critic_1_values, critic_2_values)
+            ).mean()
+
+        # optimization step (policy)
+        self.policy_optimizer.zero_grad()
+        self.scaler.scale(policy_loss).backward()
+
+        if config.torch.is_distributed:
+            self.policy.reduce_parameters()
+
+        if self._grad_norm_clip > 0:
+            self.scaler.unscale_(self.policy_optimizer)
+            nn.utils.clip_grad_norm_(self.policy.parameters(), self._grad_norm_clip)
+
+        self.scaler.step(self.policy_optimizer)
+        if self._normalize_weights:
+            l2normalize_model(self.policy)
+
+        return policy_loss, actions, log_prob, policy_outputs
+
     def _update(self, timestep: int, timesteps: int) -> None:
         """Algorithm's main update step
 
@@ -402,9 +675,11 @@ class SIMBAV2(Agent):
             # sample a batch from memory
             (
                 sampled_states,
+                sampled_obs,
                 sampled_actions,
                 sampled_rewards,
                 sampled_next_states,
+                sampled_next_obs,
                 sampled_terminated,
                 sampled_truncated,
             ) = self.memory.sample(names=self._tensors_names, batch_size=self._batch_size)[0]
@@ -412,168 +687,46 @@ class SIMBAV2(Agent):
             with torch.autocast(device_type=self._device_type, enabled=self._mixed_precision):
                 sampled_states = self._state_preprocessor(sampled_states, train=True)
                 sampled_next_states = self._state_preprocessor(sampled_next_states, train=True)
+                sampled_obs = self._observation_preprocessor(sampled_obs, train=True)
+                sampled_next_obs = self._observation_preprocessor(sampled_next_obs, train=True)
 
-                if self._use_categorical_critic:
-                    with torch.no_grad():
-                        next_actions, next_log_prob, policy_outputs = self.policy.act(
-                            {"states": sampled_next_states}, role="policy"
-                        )
-
-                        target_critic_1_out, _, _ = self.target_critic_1.act(
-                            {"states": sampled_next_states, "taken_actions": next_actions},
-                            role="target_critic_1",
-                        )
-                        target_q1, target_log_prob_q1 = self._process_categorical_critic_outputs(
-                            target_critic_1_out
-                        )
-                        target_critic_2_out, _, _ = self.target_critic_2.act(
-                            {"states": sampled_next_states, "taken_actions": next_actions},
-                            role="target_critic_2",
-                        )
-                        target_q2, target_log_prob_q2 = self._process_categorical_critic_outputs(
-                            target_critic_2_out
-                        )
-
-                        target_log_prob = torch.where(
-                            (target_q1 < target_q2).unsqueeze(-1),
-                            target_log_prob_q1,
-                            target_log_prob_q2,
-                        )
-
-                    critic_1_out, _, _ = self.critic_1.act(
-                        {"states": sampled_states, "taken_actions": sampled_actions},
-                        role="critic_1",
-                    )
-                    _, log_prob_q1 = self._process_categorical_critic_outputs(critic_1_out)
-                    critic_2_out, _, _ = self.critic_2.act(
-                        {"states": sampled_states, "taken_actions": sampled_actions},
-                        role="critic_2",
-                    )
-                    _, log_prob_q2 = self._process_categorical_critic_outputs(critic_2_out)
-                    loss_1, info_1 = categorical_td_loss(
-                        log_prob_q1,
-                        target_log_prob,
+            if self._use_categorical_critic:
+                critic_loss, target_values, critic_1_values, critic_2_values = (
+                    self.update_categorical_critic(
+                        sampled_states,
+                        sampled_obs,
+                        sampled_actions,
                         sampled_rewards,
-                        (sampled_terminated | sampled_truncated).double(),
-                        next_log_prob,
-                        self._entropy_coefficient,
-                        self._discount_factor,
-                        self._num_bins,
-                        self._min_v,
-                        self._max_v,
-                        self.device,
+                        sampled_next_states,
+                        sampled_next_obs,
+                        sampled_terminated,
+                        sampled_truncated,
                     )
-                    loss_2, info_2 = categorical_td_loss(
-                        log_prob_q2,
-                        target_log_prob,
+                )
+            else:
+                critic_loss, target_values, critic_1_values, critic_2_values = (
+                    self.update_value_critic(
+                        sampled_states,
+                        sampled_obs,
+                        sampled_actions,
                         sampled_rewards,
-                        (sampled_terminated | sampled_truncated).double(),
-                        next_log_prob,
-                        self._entropy_coefficient,
-                        self._discount_factor,
-                        self._num_bins,
-                        self._min_v,
-                        self._max_v,
-                        self.device,
+                        sampled_next_states,
+                        sampled_next_obs,
+                        sampled_terminated,
+                        sampled_truncated,
                     )
-
-                    target_values = torch.sum(info_1["target_probs"] * self.bin_values, dim=1)
-
-                    critic_loss = torch.mean(loss_1 + loss_2)
-                else:
-                    # compute target values
-                    with torch.no_grad():
-                        next_actions, next_log_prob, policy_outputs = self.policy.act(
-                            {"states": sampled_next_states}, role="policy"
-                        )
-
-                        target_q1_values, _, _ = self.target_critic_1.act(
-                            {"states": sampled_next_states, "taken_actions": next_actions},
-                            role="target_critic_1",
-                        )
-                        target_q2_values, _, _ = self.target_critic_2.act(
-                            {"states": sampled_next_states, "taken_actions": next_actions},
-                            role="target_critic_2",
-                        )
-
-                        target_q_values = (
-                            torch.min(target_q1_values, target_q2_values)
-                            - self._entropy_coefficient * next_log_prob
-                        )
-                        target_values = (
-                            sampled_rewards
-                            + self._discount_factor
-                            * (sampled_terminated | sampled_truncated).logical_not()
-                            * target_q_values
-                        )
-
-                    # compute critic loss
-                    critic_1_values, _, _ = self.critic_1.act(
-                        {"states": sampled_states, "taken_actions": sampled_actions},
-                        role="critic_1",
-                    )
-                    critic_2_values, _, _ = self.critic_2.act(
-                        {"states": sampled_states, "taken_actions": sampled_actions},
-                        role="critic_2",
-                    )
-
-                    critic_loss = (
-                        F.mse_loss(critic_1_values, target_values)
-                        + F.mse_loss(critic_2_values, target_values)
-                    ) / 2
-
-            # optimization step (critic)
-            self.critic_optimizer.zero_grad()
-            self.scaler.scale(critic_loss).backward()
-
-            if config.torch.is_distributed:
-                self.critic_1.reduce_parameters()
-                self.critic_2.reduce_parameters()
-
-            if self._grad_norm_clip > 0:
-                self.scaler.unscale_(self.critic_optimizer)
-                nn.utils.clip_grad_norm_(
-                    itertools.chain(self.critic_1.parameters(), self.critic_2.parameters()),
-                    self._grad_norm_clip,
                 )
 
-            self.scaler.step(self.critic_optimizer)
-            if self._normalize_weights:
-                l2normalize_model(self.critic_1)
-                l2normalize_model(self.critic_2)
-
-            with torch.autocast(device_type=self._device_type, enabled=self._mixed_precision):
-                # compute policy (actor) loss
-                actions, log_prob, policy_outputs = self.policy.act({"states": sampled_states}, role="policy")
-                critic_1_values, _, _ = self.critic_1.act(
-                    {"states": sampled_states, "taken_actions": actions}, role="critic_1"
-                )
-                critic_2_values, _, _ = self.critic_2.act(
-                    {"states": sampled_states, "taken_actions": actions}, role="critic_2"
-                )
-                if self._use_categorical_critic:
-                    critic_1_values, _ = self._process_categorical_critic_outputs(critic_1_values)
-                    critic_2_values, _ = self._process_categorical_critic_outputs(critic_2_values)
-
-                policy_loss = (
-                    self._entropy_coefficient * log_prob
-                    - torch.min(critic_1_values, critic_2_values)
-                ).mean()
-
-            # optimization step (policy)
-            self.policy_optimizer.zero_grad()
-            self.scaler.scale(policy_loss).backward()
-
-            if config.torch.is_distributed:
-                self.policy.reduce_parameters()
-
-            if self._grad_norm_clip > 0:
-                self.scaler.unscale_(self.policy_optimizer)
-                nn.utils.clip_grad_norm_(self.policy.parameters(), self._grad_norm_clip)
-
-            self.scaler.step(self.policy_optimizer)
-            if self._normalize_weights:
-                l2normalize_model(self.policy)
+            policy_loss, actions, log_prob, policy_outputs = self.update_policy(
+                sampled_states,
+                sampled_obs,
+                sampled_actions,
+                sampled_rewards,
+                sampled_next_states,
+                sampled_next_obs,
+                sampled_terminated,
+                sampled_truncated,
+            )
 
             # entropy learning
             if self._learn_entropy:
@@ -659,4 +812,4 @@ class SIMBAV2(Agent):
                     )
 
                 for i in range(self.action_space.shape[0]):
-                    self.track_histogram_data(f"Policy / Action Distribution {i}", next_actions[:, i])
+                    self.track_histogram_data(f"Policy / Action Distribution {i}", actions[:, i])

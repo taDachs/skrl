@@ -19,6 +19,7 @@ from skrl.utils.spaces.torch import (
 class Model(torch.nn.Module):
     def __init__(
         self,
+        state_space: Union[int, Sequence[int], gymnasium.Space],
         observation_space: Union[int, Sequence[int], gymnasium.Space],
         action_space: Union[int, Sequence[int], gymnasium.Space],
         device: Optional[Union[str, torch.device]] = None,
@@ -64,6 +65,7 @@ class Model(torch.nn.Module):
 
         self.device = config.torch.parse_device(device)
 
+        self.state_space = state_space
         self.observation_space = observation_space
         self.action_space = action_space
         self.num_observations = None if observation_space is None else compute_space_size(observation_space)
@@ -89,10 +91,17 @@ class Model(torch.nn.Module):
                        If not specified, the keys will be populated with observation and action space samples
         :type inputs: dict of torch.Tensor
         """
+        if "policy" in role:
+            input_space = self.observation_space
+        elif "critic" in role or "value" in role:
+            input_space = self.state_space
+        else:
+            raise Exception("must supply a role")
+
         if not inputs:
             inputs = {
                 "states": flatten_tensorized_space(
-                    sample_space(self.observation_space, backend="native", device=self.device)
+                    sample_space(input_space, backend="native", device=self.device)
                 ),
                 "taken_actions": flatten_tensorized_space(
                     sample_space(self.action_space, backend="native", device=self.device)

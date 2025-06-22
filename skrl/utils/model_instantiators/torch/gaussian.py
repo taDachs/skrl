@@ -15,6 +15,7 @@ from skrl.utils.spaces.torch import unflatten_tensorized_space  # noqa
 
 
 def gaussian_model(
+    state_space: Optional[Union[int, Tuple[int], gymnasium.Space]] = None,
     observation_space: Optional[Union[int, Tuple[int], gymnasium.Space]] = None,
     action_space: Optional[Union[int, Tuple[int], gymnasium.Space]] = None,
     device: Optional[Union[str, torch.device]] = None,
@@ -119,9 +120,9 @@ def gaussian_model(
         """
 
     template = f"""class GaussianModel(GaussianMixin, Model):
-    def __init__(self, observation_space, action_space, device, clip_actions,
+    def __init__(self, state_space, observation_space, action_space, device, clip_actions,
                     clip_log_std, min_log_std, max_log_std, squash, action_scaler, reduction="sum"):
-        Model.__init__(self, observation_space, action_space, device)
+        Model.__init__(self, state_space, observation_space, action_space, device)
         GaussianMixin.__init__(self, clip_actions, clip_log_std, min_log_std, max_log_std, squash, action_scaler, reduction)
 
         {networks}
@@ -130,7 +131,12 @@ def gaussian_model(
          else ""}
 
     def compute(self, inputs, role=""):
-        states = unflatten_tensorized_space(self.observation_space, inputs.get("states"))
+        if "policy" in role:
+            states = unflatten_tensorized_space(self.observation_space, inputs.get("states"))
+        elif "critic" in role or "value" in role:
+            states = unflatten_tensorized_space(self.state_space, inputs.get("states"))
+        else:
+            raise Exception("Have to pass a role")
         taken_actions = unflatten_tensorized_space(self.action_space, inputs.get("taken_actions"))
         {forward}
         {return_stm}
@@ -144,6 +150,7 @@ def gaussian_model(
     _locals = {}
     exec(template, globals(), _locals)
     return _locals["GaussianModel"](
+        state_space=state_space,
         observation_space=observation_space,
         action_space=action_space,
         device=device,

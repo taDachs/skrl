@@ -45,7 +45,7 @@ class Wrapper(object):
             f"Wrapped environment ({self._unwrapped.__class__.__name__}) does not have attribute '{key}'"
         )
 
-    def reset(self) -> Tuple[torch.Tensor, Any]:
+    def reset(self) -> Tuple[torch.Tensor | Mapping[str, torch.Tensor], Any]:
         """Reset the environment
 
         :raises NotImplementedError: Not implemented
@@ -55,7 +55,7 @@ class Wrapper(object):
         """
         raise NotImplementedError
 
-    def step(self, actions: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, Any]:
+    def step(self, actions: torch.Tensor) -> tuple[torch.Tensor | Mapping[str, torch.Tensor], torch.Tensor, torch.Tensor, torch.Tensor, Any]:
         """Perform a step in the environment
 
         :param actions: The actions to perform
@@ -177,7 +177,7 @@ class MultiAgentEnvWrapper(object):
             f"Wrapped environment ({self._unwrapped.__class__.__name__}) does not have attribute '{key}'"
         )
 
-    def reset(self) -> Tuple[Mapping[str, torch.Tensor], Mapping[str, Any]]:
+    def reset(self) -> tuple[Mapping[str, torch.Tensor], Mapping[str, Any]]:
         """Reset the environment
 
         :raises NotImplementedError: Not implemented

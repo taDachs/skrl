@@ -16,6 +16,7 @@ import skrl.agents.torch.simba_v2 as simba
 
 
 def deterministic_model(
+    state_space: Optional[Union[int, Tuple[int], gymnasium.Space]] = None,
     observation_space: Optional[Union[int, Tuple[int], gymnasium.Space]] = None,
     action_space: Optional[Union[int, Tuple[int], gymnasium.Space]] = None,
     device: Optional[Union[str, torch.device]] = None,
@@ -77,14 +78,20 @@ def deterministic_model(
     forward = textwrap.indent("\n".join(forward), prefix=" " * 8)[8:]
 
     template = f"""class DeterministicModel(DeterministicMixin, Model):
-    def __init__(self, observation_space, action_space, device, clip_actions):
-        Model.__init__(self, observation_space, action_space, device)
+    def __init__(self, state_space, observation_space, action_space, device, clip_actions):
+        Model.__init__(self, state_space, observation_space, action_space, device)
         DeterministicMixin.__init__(self, clip_actions)
 
         {networks}
 
     def compute(self, inputs, role=""):
-        states = unflatten_tensorized_space(self.observation_space, inputs.get("states"))
+        if "policy" in role:
+            states = unflatten_tensorized_space(self.observation_space, inputs.get("states"))
+        elif "critic" in role or "value" in role:
+            states = unflatten_tensorized_space(self.state_space, inputs.get("states"))
+        else:
+            raise Exception("Have to pass a role")
+
         taken_actions = unflatten_tensorized_space(self.action_space, inputs.get("taken_actions"))
         {forward}
         return output, {{}}
@@ -97,5 +104,5 @@ def deterministic_model(
     _locals = {}
     exec(template, globals(), _locals)
     return _locals["DeterministicModel"](
-        observation_space=observation_space, action_space=action_space, device=device, clip_actions=clip_actions
+        state_space=state_space, observation_space=observation_space, action_space=action_space, device=device, clip_actions=clip_actions
     )

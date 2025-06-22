@@ -21,6 +21,7 @@ from skrl.utils.spaces.torch import unflatten_tensorized_space  # noqa
 
 def shared_model(
     observation_space: Optional[Union[int, Tuple[int], gymnasium.Space]] = None,
+    state_space: Optional[Union[int, Tuple[int], gymnasium.Space]] = None,
     action_space: Optional[Union[int, Tuple[int], gymnasium.Space]] = None,
     device: Optional[Union[str, torch.device]] = None,
     structure: Sequence[str] = ["GaussianMixin", "DeterministicMixin"],
@@ -213,8 +214,8 @@ def shared_model(
     models[1]["forward"] = textwrap.indent("\n".join(models[1]["forward"]), prefix=" " * 12)[12:]
 
     template = f"""class SharedModel({",".join(structure)}, Model):
-    def __init__(self, observation_space, action_space, device):
-        Model.__init__(self, observation_space, action_space, device)
+    def __init__(self, state_space, observation_space, action_space, device):
+        Model.__init__(self, state_space, observation_space, action_space, device)
         {get_init(structure[0], parameters[0], roles[0])}
         {get_init(structure[1], parameters[1], roles[1])}
 
@@ -257,4 +258,4 @@ def shared_model(
     # instantiate model
     _locals = {}
     exec(template, globals(), _locals)
-    return _locals["SharedModel"](observation_space=observation_space, action_space=action_space, device=device)
+    return _locals["SharedModel"](state_space=state_space, observation_space=observation_space, action_space=action_space, device=device)
