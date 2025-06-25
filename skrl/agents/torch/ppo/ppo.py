@@ -152,7 +152,7 @@ class PPO(Agent):
         self._learning_rate_scheduler = self.cfg["learning_rate_scheduler"]
 
         self._state_preprocessor = self.cfg["state_preprocessor"]
-        self._observation_preprocessor = self.cfg["observation_preprocessor"]
+        self._observation_preprocessor = self.cfg["state_preprocessor"]
         self._value_preprocessor = self.cfg["value_preprocessor"]
 
         self._discount_factor = self.cfg["discount_factor"]
@@ -195,7 +195,6 @@ class PPO(Agent):
         else:
             self._state_preprocessor = self._empty_preprocessor
 
-        # set up preprocessors
         if self._observation_preprocessor:
             self._observation_preprocessor = self._observation_preprocessor(**self.cfg["observation_preprocessor_kwargs"])
             self.checkpoint_modules["observation_preprocessor"] = self._observation_preprocessor
@@ -216,9 +215,7 @@ class PPO(Agent):
         # create tensors in memory
         if self.memory is not None:
             self.memory.create_tensor(name="states", size=self.state_space, dtype=torch.float32)
-            self.memory.create_tensor(
-                name="observations", size=self.observation_space, dtype=torch.float32
-            )
+            self.memory.create_tensor(name="observations", size=self.observation_space, dtype=torch.float32)
             self.memory.create_tensor(name="actions", size=self.action_space, dtype=torch.float32)
             self.memory.create_tensor(name="rewards", size=1, dtype=torch.float32)
             self.memory.create_tensor(name="terminated", size=1, dtype=torch.bool)
@@ -248,9 +245,9 @@ class PPO(Agent):
         :return: Actions
         :rtype: torch.Tensor
         """
+        obs = states["policy"]
         # sample random actions
         # TODO, check for stochasticity
-        obs = states["policy"]
         if timestep < self._random_timesteps:
             return self.policy.random_act({"states": self._observation_preprocessor(obs)}, role="policy")
 
@@ -294,18 +291,17 @@ class PPO(Agent):
         :param timesteps: Number of timesteps
         :type timesteps: int
         """
+        critic_states = states["critic"]
+        critic_next_states = next_states["critic"]
+        policy_states = states["policy"]
+        policy_next_states = next_states["policy"]
+
         super().record_transition(
-            states, actions, rewards, next_states, terminated, truncated, infos, timestep, timesteps
+            critic_states, actions, rewards, next_states, terminated, truncated, infos, timestep, timesteps
         )
 
-        obs = states["policy"]
-        next_obs = next_states["policy"]
-        states = states["critic"]
-        next_states = next_states["critic"]
-
         if self.memory is not None:
-
-            self._current_next_states = next_states
+            self._current_next_states = critic_next_states
 
             # reward shaping
             if self._rewards_shaper is not None:
@@ -313,7 +309,7 @@ class PPO(Agent):
 
             # compute values
             with torch.autocast(device_type=self._device_type, enabled=self._mixed_precision):
-                values, _, _ = self.value.act({"states": self._state_preprocessor(states)}, role="value")
+                values, _, _ = self.value.act({"states": self._state_preprocessor(critic_states)}, role="value")
                 values = self._value_preprocessor(values, inverse=True)
 
             # time-limit (truncation) bootstrapping
@@ -322,12 +318,11 @@ class PPO(Agent):
 
             # storage transition in memory
             self.memory.add_samples(
-                states=states,
-                observations=obs,
+                states=critic_states,
+                observations=policy_states,
                 actions=actions,
                 rewards=rewards,
-                next_states=next_states,
-                next_observations=next_obs,
+                next_states=critic_next_states,
                 terminated=terminated,
                 truncated=truncated,
                 log_prob=self._current_log_prob,
@@ -335,12 +330,11 @@ class PPO(Agent):
             )
             for memory in self.secondary_memories:
                 memory.add_samples(
-                    states=states,
-                    observations=obs,
+                    states=critic_states,
+                    observations=policy_states,
                     actions=actions,
                     rewards=rewards,
-                    next_states=next_states,
-                    next_observations=next_obs,
+                    next_states=critic_next_states,
                     terminated=terminated,
                     truncated=truncated,
                     log_prob=self._current_log_prob,
@@ -476,6 +470,7 @@ class PPO(Agent):
             ) in sampled_batches:
 
                 with torch.autocast(device_type=self._device_type, enabled=self._mixed_precision):
+
                     sampled_states = self._state_preprocessor(sampled_states, train=not epoch)
                     sampled_observations = self._observation_preprocessor(sampled_observations, train=not epoch)
 

@@ -362,8 +362,13 @@ class SIMBAV2(Agent):
         :param timesteps: Number of timesteps
         :type timesteps: int
         """
+        critic_states = states["critic"]
+        critic_next_states = next_states["critic"]
+        policy_states = states["policy"]
+        policy_next_states = next_states["policy"]
+
         super().record_transition(
-            states, actions, rewards, next_states, terminated, truncated, infos, timestep, timesteps
+            critic_states, actions, rewards, next_states, terminated, truncated, infos, timestep, timesteps
         )
 
         if self.memory is not None:
@@ -374,30 +379,25 @@ class SIMBAV2(Agent):
             if self._rewards_normalizer is not None:
                 rewards = self._rewards_normalizer(rewards, terminated, truncated)
 
-            obs = states["policy"]
-            next_obs = next_states["policy"]
-            states = states["critic"]
-            next_states = next_states["critic"]
-
             # storage transition in memory
             self.memory.add_samples(
-                states=states,
-                observations=obs,
+                states=critic_states,
+                observations=policy_states,
                 actions=actions,
                 rewards=rewards,
-                next_states=next_states,
-                next_observations=next_obs,
+                next_states=critic_next_states,
+                next_observations=policy_next_states,
                 terminated=terminated,
                 truncated=truncated,
             )
             for memory in self.secondary_memories:
                 memory.add_samples(
-                    states=states,
-                    observations=obs,
+                    states=critic_states,
+                    observations=policy_states,
                     actions=actions,
                     rewards=rewards,
-                    next_states=next_states,
-                    next_observations=next_obs,
+                    next_states=critic_next_states,
+                    next_observations=policy_next_states,
                     terminated=terminated,
                     truncated=truncated,
                 )
