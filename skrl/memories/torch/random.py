@@ -14,6 +14,7 @@ class RandomMemory(Memory):
         export: bool = False,
         export_format: str = "pt",
         export_directory: str = "",
+        smart_critic_obs_storage: bool = False,
         replacement=True,
     ) -> None:
         """Random sampling memory
@@ -43,7 +44,7 @@ class RandomMemory(Memory):
 
         :raises ValueError: The export format is not supported
         """
-        super().__init__(memory_size, num_envs, device, export, export_format, export_directory)
+        super().__init__(memory_size, num_envs, device, export, export_format, export_directory, smart_critic_obs_storage)
 
         self._replacement = replacement
 

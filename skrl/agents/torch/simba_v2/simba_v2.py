@@ -20,6 +20,7 @@ from skrl.models.torch.gaussian import GaussianMixin
 from .normalization import TorchRewardNormalizer
 
 from skrl.utils import categorical_td_loss, l2normalize_model
+from skrl.utils.spaces.torch.spaces import compute_space_size
 
 
 # fmt: off
@@ -59,6 +60,7 @@ SIMBAV2_DEFAULT_CONFIG = {
     "use_categorical_critic": True,
     "use_reward_normalizer": False,  # use reward normalizer
     "reward_normalizer_kwargs": {},  # reward normalizer kwargs (e.g. {"size": env.reward_space})
+    "asymmetric": True,
 
     "rewards_shaper": None,         # rewards shaping function: Callable(reward, timestep, timesteps) -> reward
 
@@ -165,6 +167,8 @@ class SIMBAV2(Agent):
         self._max_v = self.cfg["max_v"]
         self._num_bins = self.cfg["num_bins"]
         self._use_categorical_critic = self.cfg["use_categorical_critic"]
+        is_symmetric = compute_space_size(self.state_space) == compute_space_size(self.observation_space)
+        self._asymmetric = self.cfg["asymmetric"] and not is_symmetric
 
         self.bin_values = torch.linspace(
             self._min_v, self._max_v, self._num_bins, device=self.device
@@ -259,32 +263,44 @@ class SIMBAV2(Agent):
         # create tensors in memory
         if self.memory is not None:
             self.memory.create_tensor(
-                name="states", size=self.state_space, dtype=torch.float32
-            )
-            self.memory.create_tensor(
-                name="next_states", size=self.state_space, dtype=torch.float32
-            )
-            self.memory.create_tensor(
                 name="observations", size=self.observation_space, dtype=torch.float32
             )
             self.memory.create_tensor(
                 name="next_observations", size=self.observation_space, dtype=torch.float32
             )
+            if self._asymmetric:
+                self.memory.create_tensor(
+                    name="states", size=self.state_space, dtype=torch.float32
+                )
+                self.memory.create_tensor(
+                    name="next_states", size=self.state_space, dtype=torch.float32
+                )
             self.memory.create_tensor(name="actions", size=self.action_space, dtype=torch.float32)
             self.memory.create_tensor(name="rewards", size=1, dtype=torch.float32)
             self.memory.create_tensor(name="terminated", size=1, dtype=torch.bool)
             self.memory.create_tensor(name="truncated", size=1, dtype=torch.bool)
 
-            self._tensors_names = [
-                "states",
-                "observations",
-                "actions",
-                "rewards",
-                "next_states",
-                "next_observations",
-                "terminated",
-                "truncated",
-            ]
+            if self._asymmetric:
+                self._tensors_names = [
+                    "states",
+                    "observations",
+                    "actions",
+                    "rewards",
+                    "next_states",
+                    "next_observations",
+                    "terminated",
+                    "truncated",
+                ]
+            else:
+                self._tensors_names = [
+                    "observations",
+                    "actions",
+                    "rewards",
+                    "next_observations",
+                    "terminated",
+                    "truncated",
+                ]
+
 
         if self._compile:
             self.policy = torch.compile(self.policy)
@@ -315,16 +331,20 @@ class SIMBAV2(Agent):
         """
         # sample random actions
         # TODO, check for stochasticity
-        obs = states["policy"]
+        obs = self._observation_preprocessor(states["policy"])
+        if self._asymmetric:
+            states = self._state_preprocessor(states["critic"])
+        else:
+            states = obs
         if timestep < self._random_timesteps:
             return self.policy.random_act(
-                {"states": self._observation_preprocessor(obs)}, role="policy"
+                {"states": states, "observations": obs}, role="policy"
             )
 
         # sample stochastic actions
         with torch.autocast(device_type=self._device_type, enabled=self._mixed_precision):
             actions, log_probs, outputs = self.policy.act(
-                {"states": self._observation_preprocessor(obs)}, role="policy"
+                {"states": states, "observations": obs}, role="policy"
             )
 
         return actions, log_probs, outputs
@@ -362,13 +382,17 @@ class SIMBAV2(Agent):
         :param timesteps: Number of timesteps
         :type timesteps: int
         """
-        critic_states = states["critic"]
-        critic_next_states = next_states["critic"]
-        policy_states = states["policy"]
-        policy_next_states = next_states["policy"]
+        obs = states["policy"]
+        next_obs = next_states["policy"]
+        if self._asymmetric:
+            states = states["critic"]
+            next_states = next_states["critic"]
+        else:
+            states = obs
+            next_states = next_obs
 
         super().record_transition(
-            critic_states, actions, rewards, next_states, terminated, truncated, infos, timestep, timesteps
+            states, actions, rewards, next_states, terminated, truncated, infos, timestep, timesteps
         )
 
         if self.memory is not None:
@@ -381,23 +405,23 @@ class SIMBAV2(Agent):
 
             # storage transition in memory
             self.memory.add_samples(
-                states=critic_states,
-                observations=policy_states,
+                states=states,
+                observations=obs,
                 actions=actions,
                 rewards=rewards,
-                next_states=critic_next_states,
-                next_observations=policy_next_states,
+                next_states=next_states,
+                next_observations=next_obs,
                 terminated=terminated,
                 truncated=truncated,
             )
             for memory in self.secondary_memories:
                 memory.add_samples(
-                    states=critic_states,
-                    observations=policy_states,
+                    states=states,
+                    observations=obs,
                     actions=actions,
                     rewards=rewards,
-                    next_states=critic_next_states,
-                    next_observations=policy_next_states,
+                    next_states=next_states,
+                    next_observations=next_obs,
                     terminated=terminated,
                     truncated=truncated,
                 )
@@ -452,18 +476,18 @@ class SIMBAV2(Agent):
         with torch.autocast(device_type=self._device_type, enabled=self._mixed_precision):
             with torch.no_grad():
                 next_actions, next_log_prob, policy_outputs = self.policy.act(
-                    {"states": sampled_next_obs}, role="policy"
+                    {"states": sampled_next_states, "observations": sampled_next_obs}, role="policy"
                 )
 
                 target_critic_1_out, _, _ = self.target_critic_1.act(
-                    {"states": sampled_next_states, "taken_actions": next_actions},
+                    {"states": sampled_next_states, "observations": sampled_next_obs, "taken_actions": next_actions},
                     role="target_critic_1",
                 )
                 target_q1, target_log_prob_q1 = self._process_categorical_critic_outputs(
                     target_critic_1_out
                 )
                 target_critic_2_out, _, _ = self.target_critic_2.act(
-                    {"states": sampled_next_states, "taken_actions": next_actions},
+                    {"states": sampled_next_states, "observations": sampled_next_obs, "taken_actions": next_actions},
                     role="target_critic_2",
                 )
                 target_q2, target_log_prob_q2 = self._process_categorical_critic_outputs(
@@ -477,12 +501,12 @@ class SIMBAV2(Agent):
                 )
 
             critic_1_out, _, _ = self.critic_1.act(
-                {"states": sampled_states, "taken_actions": sampled_actions},
+                {"states": sampled_states, "observations": sampled_obs, "taken_actions": sampled_actions},
                 role="critic_1",
             )
             critic_1_values, log_prob_q1 = self._process_categorical_critic_outputs(critic_1_out)
             critic_2_out, _, _ = self.critic_2.act(
-                {"states": sampled_states, "taken_actions": sampled_actions},
+                {"states": sampled_states, "observations": sampled_obs, "taken_actions": sampled_actions},
                 role="critic_2",
             )
             critic_2_values, log_prob_q2 = self._process_categorical_critic_outputs(critic_2_out)
@@ -554,15 +578,15 @@ class SIMBAV2(Agent):
             # compute target values
             with torch.no_grad():
                 next_actions, next_log_prob, policy_outputs = self.policy.act(
-                    {"states": sampled_next_obs}, role="policy"
+                    {"states": sampled_next_states, "observations": sampled_next_obs}, role="policy"
                 )
 
                 target_q1_values, _, _ = self.target_critic_1.act(
-                    {"states": sampled_next_states, "taken_actions": next_actions},
+                    {"states": sampled_next_states, "observations": sampled_next_obs, "taken_actions": next_actions},
                     role="target_critic_1",
                 )
                 target_q2_values, _, _ = self.target_critic_2.act(
-                    {"states": sampled_next_states, "taken_actions": next_actions},
+                    {"states": sampled_next_states, "observations": sampled_next_obs, "taken_actions": next_actions},
                     role="target_critic_2",
                 )
 
@@ -579,11 +603,11 @@ class SIMBAV2(Agent):
 
             # compute critic loss
             critic_1_values, _, _ = self.critic_1.act(
-                {"states": sampled_states, "taken_actions": sampled_actions},
+                {"states": sampled_states, "observations": sampled_obs, "taken_actions": sampled_actions},
                 role="critic_1",
             )
             critic_2_values, _, _ = self.critic_2.act(
-                {"states": sampled_states, "taken_actions": sampled_actions},
+                {"states": sampled_states, "observations": sampled_obs, "taken_actions": sampled_actions},
                 role="critic_2",
             )
 
@@ -627,12 +651,12 @@ class SIMBAV2(Agent):
     ) -> tuple[torch.Tensor, torch.Tensor]:
         with torch.autocast(device_type=self._device_type, enabled=self._mixed_precision):
             # compute policy (actor) loss
-            actions, log_prob, policy_outputs = self.policy.act({"states": sampled_obs}, role="policy")
+            actions, log_prob, policy_outputs = self.policy.act({"states": sampled_states, "observations": sampled_obs}, role="policy")
             critic_1_values, _, _ = self.critic_1.act(
-                {"states": sampled_states, "taken_actions": actions}, role="critic_1"
+                {"states": sampled_states, "observations": sampled_obs, "taken_actions": actions}, role="critic_1"
             )
             critic_2_values, _, _ = self.critic_2.act(
-                {"states": sampled_states, "taken_actions": actions}, role="critic_2"
+                {"states": sampled_states, "observations": sampled_obs, "taken_actions": actions}, role="critic_2"
             )
             if self._use_categorical_critic:
                 critic_1_values, _ = self._process_categorical_critic_outputs(critic_1_values)
@@ -673,22 +697,37 @@ class SIMBAV2(Agent):
         for gradient_step in range(self._gradient_steps):
 
             # sample a batch from memory
-            (
-                sampled_states,
-                sampled_obs,
-                sampled_actions,
-                sampled_rewards,
-                sampled_next_states,
-                sampled_next_obs,
-                sampled_terminated,
-                sampled_truncated,
-            ) = self.memory.sample(names=self._tensors_names, batch_size=self._batch_size)[0]
+            batch = self.memory.sample(names=self._tensors_names, batch_size=self._batch_size)[0]
+            if self._asymmetric:
+                (
+                    sampled_states,
+                    sampled_obs,
+                    sampled_actions,
+                    sampled_rewards,
+                    sampled_next_states,
+                    sampled_next_obs,
+                    sampled_terminated,
+                    sampled_truncated,
+                ) = batch
+            else:
+                (
+                    sampled_obs,
+                    sampled_actions,
+                    sampled_rewards,
+                    sampled_next_obs,
+                    sampled_terminated,
+                    sampled_truncated,
+                ) = batch
+                sampled_states = sampled_obs
+                sampled_next_states = sampled_next_obs
 
             with torch.autocast(device_type=self._device_type, enabled=self._mixed_precision):
-                sampled_states = self._state_preprocessor(sampled_states, train=True)
-                sampled_next_states = self._state_preprocessor(sampled_next_states, train=True)
-                sampled_obs = self._observation_preprocessor(sampled_obs, train=True)
-                sampled_next_obs = self._observation_preprocessor(sampled_next_obs, train=True)
+                if self._asymmetric:
+                    sampled_states = self._state_preprocessor(sampled_states, train=True)
+                    sampled_next_states = self._state_preprocessor(sampled_next_states, train=True)
+                else:
+                    sampled_states = sampled_obs
+                    sampled_next_states = sampled_next_obs
 
             if self._use_categorical_critic:
                 critic_loss, target_values, critic_1_values, critic_2_values = (

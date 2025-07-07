@@ -91,17 +91,13 @@ class Model(torch.nn.Module):
                        If not specified, the keys will be populated with observation and action space samples
         :type inputs: dict of torch.Tensor
         """
-        if "policy" in role:
-            input_space = self.observation_space
-        elif "critic" in role or "value" in role:
-            input_space = self.state_space
-        else:
-            raise Exception("must supply a role")
-
         if not inputs:
             inputs = {
                 "states": flatten_tensorized_space(
-                    sample_space(input_space, backend="native", device=self.device)
+                    sample_space(self.state_space, backend="native", device=self.device)
+                ),
+                "observations": flatten_tensorized_space(
+                    sample_space(self.observation_space, backend="native", device=self.device)
                 ),
                 "taken_actions": flatten_tensorized_space(
                     sample_space(self.action_space, backend="native", device=self.device)

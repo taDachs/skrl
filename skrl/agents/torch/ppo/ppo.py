@@ -15,6 +15,7 @@ from skrl.memories.torch import Memory
 from skrl.models.torch import Model
 from skrl.resources.schedulers.torch import KLAdaptiveLR
 
+from skrl.utils.spaces.torch.spaces import compute_space_size
 
 # fmt: off
 # [start-config-dict-torch]
@@ -54,6 +55,8 @@ PPO_DEFAULT_CONFIG = {
     "time_limit_bootstrap": False,  # bootstrap at timeout termination (episode truncation)
 
     "mixed_precision": False,       # enable automatic mixed precision for higher performance
+
+    "asymmetric": True,
 
     "experiment": {
         "directory": "",            # experiment's parent directory
@@ -166,6 +169,8 @@ class PPO(Agent):
 
         self._mixed_precision = self.cfg["mixed_precision"]
 
+        is_symmetric = compute_space_size(self.state_space) == compute_space_size(self.observation_space)
+        self._asymmetric = self.cfg["asymmetric"] and not is_symmetric
         # set up automatic mixed precision
         self._device_type = torch.device(device).type
         if version.parse(torch.__version__) >= version.parse("2.4"):
@@ -214,8 +219,12 @@ class PPO(Agent):
 
         # create tensors in memory
         if self.memory is not None:
-            self.memory.create_tensor(name="states", size=self.state_space, dtype=torch.float32)
             self.memory.create_tensor(name="observations", size=self.observation_space, dtype=torch.float32)
+            if self._asymmetric:
+                self.memory.create_tensor(
+                    name="states", size=self.state_space, dtype=torch.float32
+                )
+            self.memory.create_tensor(name="states", size=self.state_space, dtype=torch.float32)
             self.memory.create_tensor(name="actions", size=self.action_space, dtype=torch.float32)
             self.memory.create_tensor(name="rewards", size=1, dtype=torch.float32)
             self.memory.create_tensor(name="terminated", size=1, dtype=torch.bool)
@@ -226,11 +235,15 @@ class PPO(Agent):
             self.memory.create_tensor(name="advantages", size=1, dtype=torch.float32)
 
             # tensors sampled during training
-            self._tensors_names = ["states", "observations", "actions", "log_prob", "values", "returns", "advantages"]
+            if self._asymmetric:
+                self._tensors_names = ["states", "observations", "actions", "log_prob", "values", "returns", "advantages"]
+            else:
+                self._tensors_names = ["observations", "actions", "log_prob", "values", "returns", "advantages"]
 
         # create temporary variables needed for storage and computation
         self._current_log_prob = None
         self._current_next_states = None
+        self._current_next_obs = None
 
     def act(self, states: torch.Tensor, timestep: int, timesteps: int) -> torch.Tensor:
         """Process the environment's states to make a decision (actions) using the main policy
@@ -245,15 +258,25 @@ class PPO(Agent):
         :return: Actions
         :rtype: torch.Tensor
         """
-        obs = states["policy"]
+        obs = self._observation_preprocessor(states["policy"])
+        if self._asymmetric:
+            states = self._state_preprocessor(states["critic"])
+        else:
+            states = obs
         # sample random actions
         # TODO, check for stochasticity
         if timestep < self._random_timesteps:
-            return self.policy.random_act({"states": self._observation_preprocessor(obs)}, role="policy")
+            return self.policy.random_act({
+                    "states": states,
+                    "observations": obs,
+                }, role="policy")
 
         # sample stochastic actions
         with torch.autocast(device_type=self._device_type, enabled=self._mixed_precision):
-            actions, log_prob, outputs = self.policy.act({"states": self._observation_preprocessor(obs)}, role="policy")
+            actions, log_prob, outputs = self.policy.act({
+                    "states": states,
+                    "observations": obs,
+                }, role="policy")
             self._current_log_prob = log_prob
 
         return actions, log_prob, outputs
@@ -291,17 +314,23 @@ class PPO(Agent):
         :param timesteps: Number of timesteps
         :type timesteps: int
         """
-        critic_states = states["critic"]
-        critic_next_states = next_states["critic"]
-        policy_states = states["policy"]
-        policy_next_states = next_states["policy"]
+        obs = states["policy"]
+        next_obs = next_states["policy"]
+        if self._asymmetric:
+            states = states["critic"]
+            next_states = next_states["critic"]
+        else:
+            states = obs
+            next_states = next_obs
+
 
         super().record_transition(
-            critic_states, actions, rewards, next_states, terminated, truncated, infos, timestep, timesteps
+            states, actions, rewards, next_states, terminated, truncated, infos, timestep, timesteps
         )
 
         if self.memory is not None:
-            self._current_next_states = critic_next_states
+            self._current_next_states = next_states
+            self._current_next_obs = next_obs
 
             # reward shaping
             if self._rewards_shaper is not None:
@@ -309,7 +338,7 @@ class PPO(Agent):
 
             # compute values
             with torch.autocast(device_type=self._device_type, enabled=self._mixed_precision):
-                values, _, _ = self.value.act({"states": self._state_preprocessor(critic_states)}, role="value")
+                values, _, _ = self.value.act({"states": states, "observations": obs}, role="value")
                 values = self._value_preprocessor(values, inverse=True)
 
             # time-limit (truncation) bootstrapping
@@ -318,11 +347,11 @@ class PPO(Agent):
 
             # storage transition in memory
             self.memory.add_samples(
-                states=critic_states,
-                observations=policy_states,
+                states=states,
+                observations=obs,
                 actions=actions,
                 rewards=rewards,
-                next_states=critic_next_states,
+                next_states=next_states,
                 terminated=terminated,
                 truncated=truncated,
                 log_prob=self._current_log_prob,
@@ -330,11 +359,11 @@ class PPO(Agent):
             )
             for memory in self.secondary_memories:
                 memory.add_samples(
-                    states=critic_states,
-                    observations=policy_states,
+                    states=states,
+                    observations=obs,
                     actions=actions,
                     rewards=rewards,
-                    next_states=critic_next_states,
+                    next_states=next_states,
                     terminated=terminated,
                     truncated=truncated,
                     log_prob=self._current_log_prob,
@@ -428,7 +457,8 @@ class PPO(Agent):
         with torch.no_grad(), torch.autocast(device_type=self._device_type, enabled=self._mixed_precision):
             self.value.train(False)
             last_values, _, _ = self.value.act(
-                {"states": self._state_preprocessor(self._current_next_states.float())}, role="value"
+                {"states": self._current_next_states.float(), "observations":
+                 self._current_next_obs.float()}, role="value"
             )
             self.value.train(True)
             last_values = self._value_preprocessor(last_values, inverse=True)
@@ -459,15 +489,23 @@ class PPO(Agent):
             kl_divergences = []
 
             # mini-batches loop
-            for (
-                sampled_states,
-                sampled_observations,
-                sampled_actions,
-                sampled_log_prob,
-                sampled_values,
-                sampled_returns,
-                sampled_advantages,
-            ) in sampled_batches:
+            for batch in sampled_batches:
+                if self._asymmetric:
+                    (sampled_states,
+                    sampled_observations,
+                    sampled_actions,
+                    sampled_log_prob,
+                    sampled_values,
+                    sampled_returns,
+                    sampled_advantages) = batch
+                else:
+                    (sampled_observations,
+                    sampled_actions,
+                    sampled_log_prob,
+                    sampled_values,
+                    sampled_returns,
+                    sampled_advantages) = batch
+                    sampled_states = sampled_observations
 
                 with torch.autocast(device_type=self._device_type, enabled=self._mixed_precision):
 
@@ -475,7 +513,7 @@ class PPO(Agent):
                     sampled_observations = self._observation_preprocessor(sampled_observations, train=not epoch)
 
                     actions, next_log_prob, _ = self.policy.act(
-                        {"states": sampled_observations, "taken_actions": sampled_actions}, role="policy"
+                        {"states": sampled_states, "observations": sampled_observations, "taken_actions": sampled_actions}, role="policy"
                     )
 
                     # compute approximate KL divergence

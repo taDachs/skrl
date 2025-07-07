@@ -83,6 +83,17 @@ def gaussian_model(
     # parse model definition
     containers, output = generate_containers(network, output, embed_output=not network_log_prob, indent=1)
 
+    # do the reshaping of the inputs, depending on what is needed
+    reshaping = []
+    if "states" in containers[0]["input"]:
+        reshaping.append('states = unflatten_tensorized_space(self.state_space, inputs.get("states"))')
+    if "observations" in containers[0]["input"]:
+        reshaping.append('observations = unflatten_tensorized_space(self.observation_space, inputs.get("observations"))')
+    if "taken_actions" in containers[0]["input"]:
+        reshaping.append('taken_actions = unflatten_tensorized_space(self.action_space, inputs.get("taken_actions"))')
+
+    reshaping = textwrap.indent("\n".join(reshaping), prefix=" " * 8)[8:]
+
     # network definitions
     networks = []
     forward: list[str] = []
@@ -131,13 +142,7 @@ def gaussian_model(
          else ""}
 
     def compute(self, inputs, role=""):
-        if "policy" in role:
-            states = unflatten_tensorized_space(self.observation_space, inputs.get("states"))
-        elif "critic" in role or "value" in role:
-            states = unflatten_tensorized_space(self.state_space, inputs.get("states"))
-        else:
-            raise Exception("Have to pass a role")
-        taken_actions = unflatten_tensorized_space(self.action_space, inputs.get("taken_actions"))
+        {reshaping}
         {forward}
         {return_stm}
         return mean, log_std, {{}}

@@ -98,7 +98,7 @@ def _parse_input(source: str) -> str:
         "OBSERVATIONS_ACTIONS", "torch.cat([states, taken_actions], dim=1)"
     )
     source = source.replace("Shape.STATES", "STATES").replace("STATES", "states")
-    source = source.replace("Shape.OBSERVATIONS", "OBSERVATIONS").replace("OBSERVATIONS", "states")
+    source = source.replace("Shape.OBSERVATIONS", "OBSERVATIONS").replace("OBSERVATIONS", "observations")
     source = source.replace("Shape.ACTIONS", "ACTIONS").replace("ACTIONS", "taken_actions")
     return source
 

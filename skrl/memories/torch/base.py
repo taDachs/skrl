@@ -23,6 +23,7 @@ class Memory:
         export: bool = False,
         export_format: str = "pt",
         export_directory: str = "",
+        smart_critic_obs_storage: bool = False,
     ) -> None:
         """Base class representing a memory with circular buffers
 
@@ -73,6 +74,8 @@ class Memory:
 
         if not self.export_format in ["pt", "np", "csv"]:
             raise ValueError(f"Export format not supported ({self.export_format})")
+
+        self.smart_critic_obs_storage = smart_critic_obs_storage
 
     def __len__(self) -> int:
         """Compute and return the current (valid) size of the memory
@@ -159,6 +162,13 @@ class Memory:
         # compute data size
         if not keep_dimensions:
             size = compute_space_size(size, occupied_size=True)
+        if name == "states" and self.smart_critic_obs_storage:
+            if "observations" not in self.tensors:
+                raise Exception("Observations have to be intialized in memory before the states")
+            print("Using smart state storage")
+            size -= self.tensors["observations"].shape[2]
+
+
         # check dtype and size if the tensor exists
         if name in self.tensors:
             tensor = self.tensors[name]
@@ -227,6 +237,10 @@ class Memory:
                 "No samples to be recorded in memory. Pass samples as key-value arguments (where key is the tensor name)"
             )
 
+        if "states" in tensors and "observations" in tensors and self.smart_critic_obs_storage:
+            obs_dim = tensors["observations"].shape[-1]
+            tensors["states"] = tensors["states"][..., obs_dim:]
+
         # dimensions and shapes of the tensors (assume all tensors have the dimensions of the first tensor)
         tmp = tensors.get("states", tensors[next(iter(tensors))])  # ask for states first
         dim, shape = tmp.ndim, tmp.shape
@@ -236,6 +250,7 @@ class Memory:
             for name, tensor in tensors.items():
                 if name in self.tensors:
                     self.tensors[name][self.memory_index].copy_(tensor)
+
             self.memory_index += 1
         # multi environment (number of environments less than num_envs)
         elif dim > 1 and shape[0] < self.num_envs:
@@ -321,8 +336,14 @@ class Memory:
         """
         if mini_batches > 1:
             batches = np.array_split(indexes, mini_batches)
-            return [[self.tensors_view[name][batch] for name in names] for batch in batches]
-        return [[self.tensors_view[name][indexes] for name in names]]
+        else:
+            batches = [indexes]
+        return [[
+            torch.cat([self.tensors_view["observations"][batch], self.tensors_view["states"][batch]], dim=-1)
+            if name == "states" and self.smart_critic_obs_storage else
+            self.tensors_view[name][batch]
+            for name in names
+        ] for batch in batches]
 
     def sample_all(
         self, names: Tuple[str], mini_batches: int = 1, sequence_length: int = 1
